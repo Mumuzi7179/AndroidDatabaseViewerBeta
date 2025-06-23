@@ -62,11 +62,12 @@ class AnalysisThread(QThread):
     analysis_completed = Signal(list)  # 分析结果列表
     analysis_error = Signal(str)
     
-    def __init__(self, analyzer: AIAnalyzer, database_manager, packages):
+    def __init__(self, analyzer: AIAnalyzer, database_manager, packages, simple_mode=False):
         super().__init__()
         self.analyzer = analyzer
         self.database_manager = database_manager
         self.packages = packages
+        self.simple_mode = simple_mode  # 是否为简单模式（只解析结构）
         self.is_cancelled = False
     
     def cancel(self):
@@ -152,18 +153,26 @@ class AnalysisThread(QThread):
                                         # 只获取第一行数据用于结构分析
                                         row_count = table_info.row_count
                                         
-                                        if row_count > 0:
-                                            # 有数据的表，获取第一行
-                                            columns, sample_rows = self.database_manager.get_table_data(
-                                                package.package_name, parent_dir, db_name, table_name, 
-                                                limit=1, offset=0
-                                            )
-                                        else:
-                                            # 空表，只获取结构
+                                        if self.simple_mode:
+                                            # 简单模式：只获取结构，不获取数据
                                             columns, sample_rows = self.database_manager.get_table_data(
                                                 package.package_name, parent_dir, db_name, table_name, 
                                                 limit=0, offset=0
                                             )
+                                        else:
+                                            # 完整模式：获取第一行数据
+                                            if row_count > 0:
+                                                # 有数据的表，获取第一行
+                                                columns, sample_rows = self.database_manager.get_table_data(
+                                                    package.package_name, parent_dir, db_name, table_name, 
+                                                    limit=1, offset=0
+                                                )
+                                            else:
+                                                # 空表，只获取结构
+                                                columns, sample_rows = self.database_manager.get_table_data(
+                                                    package.package_name, parent_dir, db_name, table_name, 
+                                                    limit=0, offset=0
+                                                )
                                         
                                         database_data[db_key]["tables"][table_name] = {
                                             "columns": columns,
@@ -422,9 +431,16 @@ class AIAnalysisDialog(QDialog):
         self.settings_btn.clicked.connect(self.show_settings)
         toolbar_layout.addWidget(self.settings_btn)
         
+        # 分析选项
+        self.simple_analysis_cb = QCheckBox("仅解析库、列、表名 (不解析字段内容)")
+        self.simple_analysis_cb.setToolTip("勾选此项将只分析数据库结构，不读取具体的数据内容，分析速度更快")
+        toolbar_layout.addWidget(self.simple_analysis_cb)
+        
+        toolbar_layout.addStretch()
+        
         self.one_click_btn = QPushButton("🔍 一键分析")
         self.one_click_btn.clicked.connect(self.start_one_click_analysis)
-        toolbar_layout.addWidget(self.one_click_btn)
+        toolbar_layout.addWidget(self.one_click_btn)        
         
         self.stop_analysis_btn = QPushButton("⏹️ 停止分析")
         self.stop_analysis_btn.clicked.connect(self.stop_one_click_analysis)
@@ -636,8 +652,11 @@ class AIAnalysisDialog(QDialog):
         # 清空之前的结果
         self.clear_analysis_results()
         
+        # 检查是否为简单模式
+        simple_mode = self.simple_analysis_cb.isChecked()
+        
         # 开始分析
-        self.analysis_thread = AnalysisThread(self.analyzer, self.database_manager, self.packages)
+        self.analysis_thread = AnalysisThread(self.analyzer, self.database_manager, self.packages, simple_mode)
         self.analysis_thread.analysis_progress.connect(self.on_analysis_progress)
         self.analysis_thread.analysis_completed.connect(self.on_analysis_completed)
         self.analysis_thread.analysis_error.connect(self.on_analysis_error)

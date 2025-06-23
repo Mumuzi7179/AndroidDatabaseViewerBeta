@@ -24,6 +24,7 @@ from .package_tree import PackageTreeWidget
 from .database_viewer import DatabaseViewerWidget
 from .search_dialog import SearchDialog
 from .ai_analysis_dialog import AIAnalysisDialog
+from .suspicious_analysis_dialog import SuspiciousAnalysisDialog
 
 
 class LoadDataThread(QThread):
@@ -133,8 +134,10 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("Android 数据库分析工具 v0.1.8")
+        self.setWindowTitle("Android 数据库分析工具 v0.2.1")
         self.setGeometry(100, 100, 1200, 800)
+        # 设置最小窗口大小，确保所有按钮都能显示
+        self.setMinimumSize(1000, 600)
         
         # 设置窗口图标
         icon_path = Path(__file__).parent.parent / "assets" / "icon.jpg"
@@ -150,11 +153,22 @@ class MainWindow(QMainWindow):
         
         # 工具栏区域
         toolbar_layout = QHBoxLayout()
+        toolbar_layout.setSpacing(10)  # 设置按钮间距
         
         # 选择文件夹按钮
         self.select_folder_btn = QPushButton("选择数据包文件夹")
         self.select_folder_btn.clicked.connect(self.select_data_folder)
+        self.select_folder_btn.setMinimumWidth(140)
         toolbar_layout.addWidget(self.select_folder_btn)
+        
+        # 一键解析所有数据库按钮
+        self.parse_all_db_btn = QPushButton("一键解析所有数据库")
+        self.parse_all_db_btn.setToolTip("直接解析文件夹下的所有数据库文件，无需Android包结构")
+        self.parse_all_db_btn.clicked.connect(self.select_and_parse_all_databases)
+        # 确保按钮可见
+        self.parse_all_db_btn.setVisible(True)
+        self.parse_all_db_btn.setMinimumWidth(150)
+        toolbar_layout.addWidget(self.parse_all_db_btn)
         
         # 当前路径显示
         self.path_label = QLabel("未选择数据包 (可拖拽文件夹到此窗口)")
@@ -167,13 +181,23 @@ class MainWindow(QMainWindow):
         self.search_btn = QPushButton("全局搜索")
         self.search_btn.clicked.connect(self.show_search_dialog)
         self.search_btn.setEnabled(False)
+        self.search_btn.setMinimumWidth(80)
         toolbar_layout.addWidget(self.search_btn)
         
         # AI分析按钮
         self.ai_analysis_btn = QPushButton("🤖 AI分析")
         self.ai_analysis_btn.clicked.connect(self.show_ai_analysis_dialog)
         self.ai_analysis_btn.setEnabled(False)
+        self.ai_analysis_btn.setMinimumWidth(80)
         toolbar_layout.addWidget(self.ai_analysis_btn)
+        
+        # 可疑信息分析按钮
+        self.suspicious_analysis_btn = QPushButton("🕵️ 可疑信息分析")
+        self.suspicious_analysis_btn.setToolTip("快速搜索可能包含密码、钱包、加密等可疑信息的数据")
+        self.suspicious_analysis_btn.clicked.connect(self.show_suspicious_analysis_dialog)
+        self.suspicious_analysis_btn.setEnabled(False)
+        self.suspicious_analysis_btn.setMinimumWidth(120)
+        toolbar_layout.addWidget(self.suspicious_analysis_btn)
         
         main_layout.addLayout(toolbar_layout)
         
@@ -667,6 +691,12 @@ class MainWindow(QMainWindow):
         self.update_statistics()
         
         self.status_label.setText("数据加载完成")
+        
+        # 更新界面
+        self.package_tree.load_packages(packages)
+        self.search_btn.setEnabled(True)
+        self.ai_analysis_btn.setEnabled(True)
+        self.suspicious_analysis_btn.setEnabled(True)
     
     def on_load_error(self, error_message):
         """数据加载错误"""
@@ -679,6 +709,7 @@ class MainWindow(QMainWindow):
         self.select_folder_btn.setEnabled(True)
         self.search_btn.setEnabled(bool(self.packages))
         self.ai_analysis_btn.setEnabled(bool(self.packages))
+        self.suspicious_analysis_btn.setEnabled(bool(self.packages))
         self.load_thread = None
     
     def show_search_dialog(self):
@@ -709,6 +740,18 @@ class MainWindow(QMainWindow):
         
         # 显示对话框
         ai_dialog.exec()
+    
+    def show_suspicious_analysis_dialog(self):
+        """显示可疑信息分析对话框"""
+        if not self.database_manager or not self.packages:
+            QMessageBox.warning(self, "警告", "请先加载数据包")
+            return
+        
+        # 直接开始分析，不显示确认对话框
+        dialog = SuspiciousAnalysisDialog(self)
+        dialog.set_database_manager(self.database_manager)
+        dialog.start_analysis()  # 直接开始分析
+        dialog.exec()
     
     def handle_database_jump(self, package_name, parent_dir, db_name, table_name):
         """处理从搜索结果跳转到数据库的请求"""
@@ -859,7 +902,7 @@ class MainWindow(QMainWindow):
         about_html = """
         <div style="text-align: center; padding: 20px;">
             <h2>Android 数据库分析工具</h2>
-            <p><strong>版本:</strong> 0.1.8</p>
+            <p><strong>版本:</strong> 0.2.1</p>
             <p><strong>作者:</strong> mumuzi</p>
             <p><strong>GitHub:</strong> <a href="https://github.com/Mumuzi7179">https://github.com/Mumuzi7179</a></p>
             
@@ -911,5 +954,193 @@ class MainWindow(QMainWindow):
             print(f"关闭程序时出错: {e}")
             # 即使出错也要接受关闭事件
             event.accept()
+    
+    def select_and_parse_all_databases(self):
+        """选择文件夹并解析其中所有数据库文件"""
+        from PySide6.QtWidgets import QFileDialog
+        
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "选择包含数据库文件的文件夹", ""
+        )
+        
+        if folder_path:
+            self.current_data_path = folder_path
+            self.path_label.setText(f"数据库文件夹: {folder_path}")
+            self.parse_all_databases_in_folder(folder_path)
+    
+    def parse_all_databases_in_folder(self, folder_path):
+        """解析文件夹中的所有数据库文件"""
+        try:
+            # 显示进度条
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.status_label.setText("正在扫描数据库文件...")
+            
+            # 创建一个特殊的文件解析器，用于扫描所有数据库
+            from pathlib import Path
+            from ..core.file_parser import DatabaseFileInfo, PackageInfo
+            
+            # 递归查找所有数据库文件
+            all_db_files = []
+            folder_path_obj = Path(folder_path)
+            
+            def scan_databases(directory, depth=0, max_depth=10):
+                """递归扫描数据库文件"""
+                if depth > max_depth:
+                    return
+                
+                try:
+                    for item in directory.iterdir():
+                        if item.is_file():
+                            if self._is_database_file(item):
+                                all_db_files.append(item)
+                        elif item.is_dir():
+                            scan_databases(item, depth + 1, max_depth)
+                except (PermissionError, OSError) as e:
+                    print(f"扫描目录失败 {directory}: {e}")
+            
+            # 开始扫描
+            scan_databases(folder_path_obj)
+            
+            self.progress_bar.setValue(30)
+            self.status_label.setText(f"发现 {len(all_db_files)} 个数据库文件，正在组织结构...")
+            
+            # 将数据库文件组织成虚拟包结构
+            packages = []
+            
+            # 按目录分组数据库文件
+            db_by_dir = {}
+            for db_file in all_db_files:
+                parent_dir = db_file.parent.name
+                if parent_dir not in db_by_dir:
+                    db_by_dir[parent_dir] = []
+                db_by_dir[parent_dir].append(db_file)
+            
+            self.progress_bar.setValue(60)
+            
+            # 为每个目录创建一个虚拟包
+            for dir_name, files in db_by_dir.items():
+                database_files = {"databases": []}
+                
+                for db_file in files:
+                    db_info = DatabaseFileInfo(
+                        file_name=db_file.name,
+                        file_path=str(db_file),
+                        parent_dir="databases"
+                    )
+                    database_files["databases"].append(db_info)
+                
+                # 创建虚拟包信息
+                package_info = PackageInfo(
+                    package_name=f"db_folder.{dir_name}",
+                    path=str(db_file.parent),
+                    has_databases=True,
+                    has_shared_prefs=False,
+                    has_files=False,
+                    is_system_app=False,  # 标记为非系统应用以便AI分析
+                    database_files=database_files
+                )
+                packages.append(package_info)
+            
+            # 如果没有按目录分组，创建一个总的包
+            if not packages and all_db_files:
+                database_files = {"databases": []}
+                
+                for db_file in all_db_files:
+                    db_info = DatabaseFileInfo(
+                        file_name=db_file.name,
+                        file_path=str(db_file),
+                        parent_dir="databases"
+                    )
+                    database_files["databases"].append(db_info)
+                
+                package_info = PackageInfo(
+                    package_name="db_folder.all_databases",
+                    path=folder_path,
+                    has_databases=True,
+                    has_shared_prefs=False,
+                    has_files=False,
+                    is_system_app=False,
+                    database_files=database_files
+                )
+                packages.append(package_info)
+            
+            self.progress_bar.setValue(90)
+            self.status_label.setText("正在加载数据库内容...")
+            
+            # 加载数据库
+            self.database_manager.load_databases(packages)
+            self.packages = packages
+            
+            # 更新界面
+            self.package_tree.load_packages(packages)
+            self.search_btn.setEnabled(True)
+            self.ai_analysis_btn.setEnabled(True)
+            self.suspicious_analysis_btn.setEnabled(True)
+            
+            self.progress_bar.setValue(100)
+            self.status_label.setText(f"成功加载 {len(packages)} 个虚拟包，共 {len(all_db_files)} 个数据库文件")
+            
+            # 更新统计信息
+            self.update_statistics()
+            
+            # 隐藏进度条
+            self.progress_bar.setVisible(False)
+            
+            QMessageBox.information(
+                self, "加载完成", 
+                f"成功加载 {len(all_db_files)} 个数据库文件\n"
+                f"已组织为 {len(packages)} 个虚拟包\n"
+                f"现在可以使用搜索和AI分析功能了"
+            )
+            
+        except Exception as e:
+            self.progress_bar.setVisible(False)
+            self.status_label.setText("加载失败")
+            QMessageBox.critical(self, "错误", f"解析数据库文件时发生错误:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def _is_database_file(self, file_path):
+        """检查文件是否为数据库文件"""
+        try:
+            # 首先检查文件大小，太小的文件可能不是数据库
+            if file_path.stat().st_size < 100:
+                return False
+                
+            # 读取文件头部检查SQLite签名
+            with open(file_path, 'rb') as f:
+                header = f.read(16)
+                # SQLite文件头签名
+                if header.startswith(b'SQLite format 3\x00'):
+                    return True
+                    
+            # 如果文件头不匹配，但文件名符合数据库特征，也尝试作为数据库处理
+            file_name = file_path.name.lower()
+            db_keywords = ['db', 'database', 'sqlite', 'data', 'cache', 'message', 'contact', 'log']
+            
+            # 检查文件扩展名
+            if file_path.suffix.lower() in ['.db', '.sqlite', '.sqlite3']:
+                return True
+                
+            # 检查无扩展名文件是否包含数据库关键词
+            if not file_path.suffix:
+                for keyword in db_keywords:
+                    if keyword in file_name:
+                        # 尝试打开看是否为有效的SQLite文件
+                        try:
+                            import sqlite3
+                            conn = sqlite3.connect(str(file_path))
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1")
+                            conn.close()
+                            return True
+                        except:
+                            pass
+                            
+            return False
+            
+        except (IOError, OSError):
+            return False
 
 # ... rest of the file remains unchanged ... 

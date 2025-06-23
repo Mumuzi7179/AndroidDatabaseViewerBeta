@@ -592,6 +592,26 @@ class DatabaseManager:
         
         return results
     
+    def get_all_databases(self):
+        """
+        获取所有数据库信息
+        
+        Returns:
+            数据库信息字典: {package_name: {parent_dir: {db_name: db_info}}}
+        """
+        result = {}
+        for package_name, package_dbs in self.databases.items():
+            result[package_name] = {}
+            for parent_dir, dir_dbs in package_dbs.items():
+                result[package_name][parent_dir] = {}
+                for db_name, db_info in dir_dbs.items():
+                    result[package_name][parent_dir][db_name] = {
+                        'path': db_info.database_path,
+                        'tables': db_info.tables or [],
+                        'parent_dir': parent_dir
+                    }
+        return result
+    
     def get_database_statistics(self) -> Dict[str, Any]:
         """
         获取数据库统计信息

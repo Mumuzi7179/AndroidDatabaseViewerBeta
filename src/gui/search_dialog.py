@@ -145,6 +145,13 @@ class SearchDialog(QDialog):
         self.search_thread = None
         self.last_results = []
         
+        # 分页相关变量
+        self.current_page = 1
+        self.page_size = 10
+        self.total_pages = 1
+        self.all_results = []  # 存储所有搜索结果
+        self.current_page_results = []  # 当前页显示的结果
+        
         self.setWindowTitle("全局搜索")
         self.setMinimumSize(900, 600)
         self.init_ui()
@@ -203,6 +210,48 @@ class SearchDialog(QDialog):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
+        
+        # 添加分页控制组
+        pagination_group = QGroupBox("分页设置")
+        pagination_layout = QHBoxLayout(pagination_group)
+        
+        # 每页显示数量选择
+        pagination_layout.addWidget(QLabel("每页显示:"))
+        self.page_size_combo = QComboBox()
+        self.page_size_combo.addItems(["10", "20", "50", "100"])
+        self.page_size_combo.setCurrentText("10")  # 默认10条
+        self.page_size_combo.currentTextChanged.connect(self.on_page_size_changed)
+        pagination_layout.addWidget(self.page_size_combo)
+        
+        pagination_layout.addStretch()
+        
+        # 分页控制按钮
+        self.prev_page_btn = QPushButton("上一页")
+        self.prev_page_btn.clicked.connect(self.prev_page)
+        self.prev_page_btn.setEnabled(False)
+        pagination_layout.addWidget(self.prev_page_btn)
+        
+        self.page_label = QLabel("第 1 页 / 共 1 页")
+        pagination_layout.addWidget(self.page_label)
+        
+        self.next_page_btn = QPushButton("下一页")
+        self.next_page_btn.clicked.connect(self.next_page)
+        self.next_page_btn.setEnabled(False)
+        pagination_layout.addWidget(self.next_page_btn)
+        
+        # 跳转页面  
+        pagination_layout.addWidget(QLabel("跳转至:"))
+        self.page_input = QLineEdit()
+        self.page_input.setPlaceholderText("页码")
+        self.page_input.setMaximumWidth(60)
+        self.page_input.returnPressed.connect(self.jump_to_page)
+        pagination_layout.addWidget(self.page_input)
+        
+        jump_btn = QPushButton("GO")
+        jump_btn.clicked.connect(self.jump_to_page)
+        pagination_layout.addWidget(jump_btn)
+        
+        layout.addWidget(pagination_group)
         
         # 状态标签
         self.status_label = QLabel("准备搜索")
@@ -419,39 +468,20 @@ class SearchDialog(QDialog):
     def on_search_completed(self, results):
         """搜索完成"""
         self.last_results = results
+        self.all_results = results  # 存储所有结果用于分页
         
         # 更新结果计数
         self.result_count_label.setText(f"搜索结果: {len(results)} 条")
         
-        # 填充结果表格
-        self.results_table.setRowCount(len(results))
-        
-        for row_idx, result in enumerate(results):
-            # 包名
-            self.results_table.setItem(row_idx, 0, QTableWidgetItem(result.package_name))
-            
-            # 数据库
-            self.results_table.setItem(row_idx, 1, QTableWidgetItem(result.database_name))
-            
-            # 匹配内容
-            match_text = str(result.match_value)[:100]  # 限制长度
-            if len(str(result.match_value)) > 100:
-                match_text += "..."
-            match_item = QTableWidgetItem(match_text)
-            match_item.setToolTip(str(result.match_value))  # 完整内容作为提示
-            self.results_table.setItem(row_idx, 2, match_item)
-            
-            # 行数据预览
-            safe_row_data = safe_json_serialize(result.row_data)
-            row_preview = str(safe_row_data)[:100]
-            if len(str(safe_row_data)) > 100:
-                row_preview += "..."
-            preview_item = QTableWidgetItem(row_preview)
-            preview_item.setToolTip(json.dumps(safe_row_data, ensure_ascii=False, indent=2))
-            self.results_table.setItem(row_idx, 3, preview_item)
-        
-        # 调整列宽
-        self.results_table.resizeColumnsToContents()
+        if not results:
+            # 没有结果时清空分页
+            self.all_results = []
+            self.current_page = 1
+            self.update_pagination()
+        else:
+            # 重置到第一页并更新分页显示
+            self.current_page = 1
+            self.update_pagination()
         
         # 自动保存搜索结果
         if self.auto_save_cb.isChecked() and self.log_manager:
@@ -489,8 +519,8 @@ class SearchDialog(QDialog):
     def show_row_details(self, item):
         """显示行详细信息"""
         row = item.row() if hasattr(item, 'row') else item
-        if row < len(self.last_results):
-            result = self.last_results[row]
+        if row < len(self.current_page_results):
+            result = self.current_page_results[row]
             
             # 创建详细信息对话框
             dialog = QDialog(self)
@@ -743,10 +773,10 @@ class SearchDialog(QDialog):
     def jump_to_database_location(self, row):
         """跳转到主窗口中对应的数据库位置"""
         try:
-            print(f"尝试跳转，行索引: {row}, 结果总数: {len(self.last_results)}")
+            print(f"尝试跳转，行索引: {row}, 当前页结果数: {len(self.current_page_results)}")
             
-            if row >= 0 and row < len(self.last_results):
-                result = self.last_results[row]
+            if row >= 0 and row < len(self.current_page_results):
+                result = self.current_page_results[row]
                 print(f"跳转目标: {result.package_name}/{result.parent_dir}/{result.database_name}/{result.table_name}")
                 
                 # 发射跳转信号
@@ -772,4 +802,119 @@ class SearchDialog(QDialog):
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "跳转错误", f"跳转功能发生错误:\n{str(e)}")
+    
+    def on_page_size_changed(self):
+        """页面大小改变处理"""
+        try:
+            new_page_size = int(self.page_size_combo.currentText())
+            if new_page_size != self.page_size:
+                self.page_size = new_page_size
+                self.current_page = 1  # 重置到第一页
+                self.update_pagination()
+        except ValueError:
+            pass
+    
+    def prev_page(self):
+        """上一页"""
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.update_pagination()
+    
+    def next_page(self):
+        """下一页"""
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self.update_pagination()
+    
+    def jump_to_page(self):
+        """跳转到指定页面"""
+        try:
+            page_num = int(self.page_input.text())
+            if 1 <= page_num <= self.total_pages:
+                self.current_page = page_num
+                self.update_pagination()
+                self.page_input.clear()
+            else:
+                QMessageBox.warning(self, "页码错误", f"页码必须在 1 到 {self.total_pages} 之间")
+        except ValueError:
+            QMessageBox.warning(self, "输入错误", "请输入有效的页码数字")
+    
+    def update_pagination(self):
+        """更新分页显示"""
+        if not self.all_results:
+            self.current_page = 1
+            self.total_pages = 1
+            self.current_page_results = []
+        else:
+            # 计算总页数
+            self.total_pages = max(1, (len(self.all_results) + self.page_size - 1) // self.page_size)
+            
+            # 确保当前页在有效范围内
+            self.current_page = max(1, min(self.current_page, self.total_pages))
+            
+            # 计算当前页的数据范围
+            start_index = (self.current_page - 1) * self.page_size
+            end_index = min(start_index + self.page_size, len(self.all_results))
+            self.current_page_results = self.all_results[start_index:end_index]
+        
+        # 更新UI显示
+        self.display_current_page_results()
+        self.update_pagination_controls()
+    
+    def display_current_page_results(self):
+        """显示当前页的搜索结果"""
+        self.results_table.setRowCount(0)
+        
+        if not self.current_page_results:
+            if not self.all_results:
+                # 显示无结果
+                self.results_table.setRowCount(1)
+                self.results_table.setItem(0, 0, QTableWidgetItem("未找到匹配结果"))
+                for i in range(1, 4):
+                    self.results_table.setItem(0, i, QTableWidgetItem(""))
+            return
+        
+        # 设置表格行数
+        self.results_table.setRowCount(len(self.current_page_results))
+        
+        # 填充表格数据
+        for i, result in enumerate(self.current_page_results):
+            # 包名
+            self.results_table.setItem(i, 0, QTableWidgetItem(result.package_name))
+            
+            # 数据库
+            self.results_table.setItem(i, 1, QTableWidgetItem(result.database_name))
+            
+            # 匹配内容
+            match_text = str(result.match_value)[:100]  # 限制长度
+            if len(str(result.match_value)) > 100:
+                match_text += "..."
+            match_item = QTableWidgetItem(match_text)
+            match_item.setToolTip(str(result.match_value))  # 完整内容作为提示
+            self.results_table.setItem(i, 2, match_item)
+            
+            # 行数据预览
+            safe_row_data = safe_json_serialize(result.row_data)
+            row_preview = str(safe_row_data)[:100]
+            if len(str(safe_row_data)) > 100:
+                row_preview += "..."
+            preview_item = QTableWidgetItem(row_preview)
+            preview_item.setToolTip(json.dumps(safe_row_data, ensure_ascii=False, indent=2))
+            self.results_table.setItem(i, 3, preview_item)
+        
+        # 调整列宽
+        self.results_table.resizeColumnsToContents()
+    
+    def update_pagination_controls(self):
+        """更新分页控件状态"""
+        self.page_label.setText(f"第 {self.current_page} 页 / 共 {self.total_pages} 页 (总计 {len(self.all_results)} 条)")
+        
+        # 更新按钮状态
+        self.prev_page_btn.setEnabled(self.current_page > 1)
+        self.next_page_btn.setEnabled(self.current_page < self.total_pages)
+        
+        # 如果没有结果，禁用分页控件
+        has_results = len(self.all_results) > 0
+        self.page_size_combo.setEnabled(has_results)
+        self.page_input.setEnabled(has_results)
  
