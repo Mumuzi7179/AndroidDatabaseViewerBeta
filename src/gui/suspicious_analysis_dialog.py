@@ -34,8 +34,8 @@ class SuspiciousSearchThread(QThread):
                 "color": "#FF5722"
             },
             "钱包相关": {
-                "keywords": ["钱包", "wallet", "钱", "支付宝", "微信", "购买", "欠"],
-                "regex": [r"(?=.*[a-zA-Z])(?=.*\d)^[a-zA-Z\d]{12,64}$"],  # 同时包含字母和数字的12-64位纯字母数字字符串
+                "keywords": ["钱包", "wallet", "钱", "支付", "微信", "购买", "欠"],
+                "regex": [],  # 同时包含字母和数字的12-64位纯字母数字字符串
                 "color": "#4CAF50"
             },
             "服务器相关": {
@@ -44,7 +44,7 @@ class SuspiciousSearchThread(QThread):
                 "color": "#2196F3"
             },
             "加密容器相关": {
-                "keywords": ["VC", "veracrypt", "tc", "truecrypt", "bt", "bitlocker", "秘钥", "key"],
+                "keywords": ["VC", "veracrypt", "tc", "truecrypt", "bt", "bitlocker", "秘钥", "key","加密"],
                 "regex": [],
                 "color": "#9C27B0"
             },

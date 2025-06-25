@@ -25,6 +25,7 @@ from .database_viewer import DatabaseViewerWidget
 from .search_dialog import SearchDialog
 from .ai_analysis_dialog import AIAnalysisDialog
 from .suspicious_analysis_dialog import SuspiciousAnalysisDialog
+from .export_attachments_dialog import ExportAttachmentsDialog
 
 
 class LoadDataThread(QThread):
@@ -134,7 +135,7 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("Android 数据库分析工具 v0.2.1")
+        self.setWindowTitle("Android 数据库分析工具 v0.3.0")
         self.setGeometry(100, 100, 1200, 800)
         # 设置最小窗口大小，确保所有按钮都能显示
         self.setMinimumSize(1000, 600)
@@ -199,6 +200,14 @@ class MainWindow(QMainWindow):
         self.suspicious_analysis_btn.setMinimumWidth(120)
         toolbar_layout.addWidget(self.suspicious_analysis_btn)
         
+        # 一键导出所有附件按钮
+        self.export_attachments_btn = QPushButton("📎 一键导出所有附件")
+        self.export_attachments_btn.setToolTip("自动识别并导出所有数据库中的附件文件（图片、文档、压缩包等）")
+        self.export_attachments_btn.clicked.connect(self.show_export_attachments_dialog)
+        self.export_attachments_btn.setEnabled(False)
+        self.export_attachments_btn.setMinimumWidth(140)
+        toolbar_layout.addWidget(self.export_attachments_btn)
+        
         main_layout.addLayout(toolbar_layout)
         
         # 进度条
@@ -220,8 +229,8 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.package_tree)
         splitter.addWidget(self.database_viewer)
         
-        # 设置分割器比例
-        splitter.setSizes([300, 900])
+        # 设置分割器比例 - 调整到合适的中间值
+        splitter.setSizes([340, 860])
         main_layout.addWidget(splitter)
         
         # 设置数据库管理器
@@ -481,6 +490,14 @@ class MainWindow(QMainWindow):
         
         tools_menu.addSeparator()
         
+        # 一键导出所有附件
+        export_attachments_action = QAction("一键导出所有附件", self)
+        export_attachments_action.setShortcut("Ctrl+E")
+        export_attachments_action.triggered.connect(self.show_export_attachments_dialog)
+        tools_menu.addAction(export_attachments_action)
+        
+        tools_menu.addSeparator()
+        
         # 清理日志
         cleanup_action = QAction("清理旧日志", self)
         cleanup_action.triggered.connect(self.cleanup_old_logs)
@@ -697,6 +714,7 @@ class MainWindow(QMainWindow):
         self.search_btn.setEnabled(True)
         self.ai_analysis_btn.setEnabled(True)
         self.suspicious_analysis_btn.setEnabled(True)
+        self.export_attachments_btn.setEnabled(True)
     
     def on_load_error(self, error_message):
         """数据加载错误"""
@@ -710,6 +728,7 @@ class MainWindow(QMainWindow):
         self.search_btn.setEnabled(bool(self.packages))
         self.ai_analysis_btn.setEnabled(bool(self.packages))
         self.suspicious_analysis_btn.setEnabled(bool(self.packages))
+        self.export_attachments_btn.setEnabled(bool(self.packages))
         self.load_thread = None
     
     def show_search_dialog(self):
@@ -751,6 +770,16 @@ class MainWindow(QMainWindow):
         dialog = SuspiciousAnalysisDialog(self)
         dialog.set_database_manager(self.database_manager)
         dialog.start_analysis()  # 直接开始分析
+        dialog.exec()
+    
+    def show_export_attachments_dialog(self):
+        """显示导出所有附件对话框"""
+        if not self.database_manager or not self.packages:
+            QMessageBox.warning(self, "警告", "请先加载数据包")
+            return
+        
+        # 创建导出附件对话框
+        dialog = ExportAttachmentsDialog(self.database_manager, self)
         dialog.exec()
     
     def handle_database_jump(self, package_name, parent_dir, db_name, table_name):
@@ -902,7 +931,7 @@ class MainWindow(QMainWindow):
         about_html = """
         <div style="text-align: center; padding: 20px;">
             <h2>Android 数据库分析工具</h2>
-            <p><strong>版本:</strong> 0.2.1</p>
+            <p><strong>版本:</strong> 0.3.0</p>
             <p><strong>作者:</strong> mumuzi</p>
             <p><strong>GitHub:</strong> <a href="https://github.com/Mumuzi7179">https://github.com/Mumuzi7179</a></p>
             
@@ -915,6 +944,7 @@ class MainWindow(QMainWindow):
                 <li>支持无扩展名数据库文件</li>
                 <li>支持拖拽文件夹加载</li>
                 <li>右键复制单元格内容</li>
+                <li>双击打开特殊格式文件</li>
             </ul>
         </div>
         """
@@ -944,8 +974,14 @@ class MainWindow(QMainWindow):
                     print("停止主加载线程...")
                     self.load_thread.requestInterruption()
                     self.load_thread.terminate()
+                    if not self.load_thread.wait(2000):  # 最多等待2秒
+                        print("主加载线程未能正常结束")
                     self.load_thread.deleteLater()
                     self.load_thread = None
+            
+            # 关闭数据库连接
+            if hasattr(self, 'database_manager') and self.database_manager:
+                self.database_manager.close_all_connections()
             
             print("程序关闭清理完成")
             event.accept()
@@ -1077,6 +1113,7 @@ class MainWindow(QMainWindow):
             self.search_btn.setEnabled(True)
             self.ai_analysis_btn.setEnabled(True)
             self.suspicious_analysis_btn.setEnabled(True)
+            self.export_attachments_btn.setEnabled(True)
             
             self.progress_bar.setValue(100)
             self.status_label.setText(f"成功加载 {len(packages)} 个虚拟包，共 {len(all_db_files)} 个数据库文件")

@@ -11,6 +11,164 @@ from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass
 
 
+# 常见文件头定义（基于file_head.txt）
+FILE_SIGNATURES = {
+    # 图片格式
+    b'\xFF\xD8\xFF': '.jpg',
+    b'\x89PNG\r\n\x1a\n': '.png',
+    b'GIF89a': '.gif',
+    b'GIF87a': '.gif',
+    b'BM': '.bmp',
+    
+    # 压缩格式
+    b'PK\x03\x04': '.zip',
+    b'\x1f\x8b\x08': '.gz',
+    b'BZh': '.bz2',
+    b'\xfd\x37\x7a\x58\x5a\x00': '.xz',
+    b'\x28\xb5\x2f\xfd': '.zstd',
+    b'ustar\x00\x30\x30': '.tar',
+    b'\x37\x7a\xbc\xaf\x27\x1c': '.7z',
+    b'Rar!\x1a\x07': '.rar',
+    b'\x78\x9c': '.zlib',
+    
+    # 音频格式
+    b'ID3': '.mp3',
+    b'\xff\xfb': '.mp3',
+    b'\xff\xf3': '.mp3',
+    b'\xff\xf2': '.mp3',
+    b'fLaC': '.flac',
+    b'OggS': '.ogg',
+    
+    # 视频格式
+    b'\x00\x00\x00\x14ftyp': '.mp4',
+    b'\x00\x00\x01\xba': '.mpeg',
+    b'\x00\x00\x01\xb3': '.mpeg',
+    b'\x1a\x45\xdf\xa3': '.mkv',
+    b'ftyp': '.mp4',  # ISO Base Media
+    b'3GP2': '.3gp',
+    
+    # 文档格式
+    b'%PDF': '.pdf',
+    b'<?xml': '.xml',
+    b'<html': '.html',
+    b'\xef\xbb\xbf': '.txt',  # UTF-8 BOM
+    b'%!': '.ps',  # PostScript
+    b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1': '.doc',  # Office早期格式
+    
+    # 字体格式
+    b'\x00\x01\x00\x00': '.ttf',
+    b'OTTO': '.otf',
+    
+    # 可执行文件
+    b'\x7fELF': '.elf',
+    b'MZ': '.exe',
+    b'CWS': '.swf',  # Flash
+    
+    # 数据库
+    b'SQLite format 3\x00': '.db',
+    
+    # 虚拟磁盘
+    b'\x38\xb5\x2f\xfd': '.qcow',
+    
+    # 其他格式
+    b'RIFF': '.wav',  # 也可能是AVI
+}
+
+
+def detect_file_type(data: bytes) -> Optional[str]:
+    """
+    检测数据的文件类型
+    
+    Args:
+        data: 二进制数据
+        
+    Returns:
+        文件扩展名或None
+    """
+    if not data or len(data) < 4:
+        return None
+    
+    # 检查常见文件头
+    for signature, file_type in FILE_SIGNATURES.items():
+        if data.startswith(signature):
+            return file_type
+    
+    # 特殊检查：MP4等格式的ftyp在第4字节开始
+    if len(data) >= 12:
+        if data[4:8] == b'ftyp':
+            if data[8:12] in [b'mp41', b'mp42', b'isom', b'M4V ', b'M4A ']:
+                return '.mp4'
+            elif data[8:12] == b'M4V ':
+                return '.m4v'
+    
+    # 检查RIFF格式的具体类型
+    if data.startswith(b'RIFF') and len(data) >= 12:
+        if data[8:12] == b'WAVE':
+            return '.wav'
+        elif data[8:12] == b'AVI ':
+            return '.avi'
+        elif data[8:12] == b'WEBP':
+            return '.webp'
+    
+    return None
+
+
+def format_field_value(value: Any, max_display_size: int = 2000) -> Tuple[str, bool, Optional[str]]:
+    """
+    格式化字段值用于显示
+    
+    Args:
+        value: 原始值
+        max_display_size: 最大显示字节数
+        
+    Returns:
+        (显示文本, 是否为大字段, 文件类型)
+    """
+    if value is None:
+        return "NULL", False, None
+    
+    # 处理二进制数据
+    if isinstance(value, bytes):
+        # 检测文件类型
+        file_type = detect_file_type(value)
+        
+        if file_type:
+            # 是已知文件格式
+            size_mb = len(value) / (1024 * 1024)
+            if size_mb >= 1:
+                return f"[{file_type}文件 - {size_mb:.1f}MB]", True, file_type
+            else:
+                size_kb = len(value) / 1024
+                return f"[{file_type}文件 - {size_kb:.1f}KB]", True, file_type
+        elif len(value) > max_display_size:
+            # 大二进制数据
+            size_kb = len(value) / 1024
+            return f"[二进制数据过大 - {size_kb:.1f}KB，双击展示]", True, None
+        else:
+            # 小二进制数据，尝试解码
+            try:
+                decoded = value.decode('utf-8', errors='replace')
+                if len(decoded) > max_display_size:
+                    return f"[字段过大 - {len(decoded)}字符，双击展示]", True, None
+                return decoded, False, None
+            except:
+                return f"[二进制数据 - {len(value)}字节]", len(value) > max_display_size, None
+    
+    # 处理字符串数据
+    elif isinstance(value, str):
+        if len(value.encode('utf-8')) > max_display_size:
+            char_count = len(value)
+            return f"[字段过大 - {char_count}字符，双击展示]", True, None
+        return value, False, None
+    
+    # 处理其他类型
+    else:
+        str_value = str(value)
+        if len(str_value.encode('utf-8')) > max_display_size:
+            return f"[字段过大，双击展示]", True, None
+        return str_value, False, None
+
+
 @dataclass
 class DatabaseInfo:
     """数据库信息"""
@@ -666,4 +824,133 @@ class DatabaseManager:
                 conn.close()
             except:
                 pass
-        self.connections.clear() 
+        self.connections.clear()
+    
+    def export_all_attachments(self, progress_callback=None, export_by_package=False):
+        """一键导出所有附件"""
+        import os
+        import shutil
+        
+        # 创建输出目录，如果存在则清空
+        output_dir = "./output"
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        
+        exported_files = []
+        total_processed = 0
+        file_counters = {}  # 用于按包导出时的文件计数
+        
+        try:
+            for package_name, package_dbs in self.databases.items():
+                for parent_dir, dir_dbs in package_dbs.items():
+                    for db_name, db_info in dir_dbs.items():
+                        db_path = db_info.database_path
+                        
+                        # 连接数据库
+                        conn = sqlite3.connect(db_path)
+                        cursor = conn.cursor()
+                        
+                        # 获取所有表
+                        for table_name in db_info.tables:
+                            try:
+                                # 获取表结构
+                                cursor.execute(f"PRAGMA table_info({table_name})")
+                                columns_info = cursor.fetchall()
+                                column_names = [col[1] for col in columns_info]
+                                
+                                # 获取所有数据
+                                cursor.execute(f"SELECT rowid, * FROM {table_name}")
+                                rows = cursor.fetchall()
+                                
+                                for row in rows:
+                                    rowid = row[0]
+                                    data_row = row[1:]  # 去掉rowid
+                                    
+                                    for col_index, value in enumerate(data_row):
+                                        if isinstance(value, bytes) and len(value) > 150:
+                                            # 检测文件类型
+                                            file_type = detect_file_type(value)
+                                            if file_type and file_type != '.unknown':
+                                                if export_by_package:
+                                                    # 按包导出：创建包目录
+                                                    package_dir = os.path.join(output_dir, package_name)
+                                                    os.makedirs(package_dir, exist_ok=True)
+                                                    
+                                                    # 为每个数据库维护文件计数器
+                                                    counter_key = f"{package_name}_{db_name}"
+                                                    if counter_key not in file_counters:
+                                                        file_counters[counter_key] = 0
+                                                    file_counters[counter_key] += 1
+                                                    
+                                                    # 生成文件名：数据库名_序号.扩展名
+                                                    filename = f"{db_name}_{file_counters[counter_key]}{file_type}"
+                                                    filepath = os.path.join(package_dir, filename)
+                                                else:
+                                                    # 按类型导出：创建文件类型目录
+                                                    type_dir = os.path.join(output_dir, file_type[1:])  # 去掉点
+                                                    os.makedirs(type_dir, exist_ok=True)
+                                                    
+                                                    # 生成文件名
+                                                    column_name = column_names[col_index] if col_index < len(column_names) else f"col_{col_index}"
+                                                    filename = f"{db_name}_{table_name}_{column_name}_{rowid}{file_type}"
+                                                    filepath = os.path.join(type_dir, filename)
+                                                
+                                                # 保存文件
+                                                with open(filepath, 'wb') as f:
+                                                    f.write(value)
+                                                
+                                                column_name = column_names[col_index] if col_index < len(column_names) else f"col_{col_index}"
+                                                exported_files.append({
+                                                    'package': package_name,
+                                                    'database': db_name,
+                                                    'table': table_name,
+                                                    'column': column_name,
+                                                    'row': rowid,
+                                                    'file_type': file_type,
+                                                    'file_path': filepath,
+                                                    'file_size': len(value)
+                                                })
+                                    
+                                    total_processed += 1
+                                    if progress_callback:
+                                        progress_callback(total_processed)
+                                        
+                            except Exception as e:
+                                print(f"处理表 {table_name} 时出错: {e}")
+                                continue
+                        
+                        conn.close()
+                        
+        except Exception as e:
+            print(f"导出附件时出错: {e}")
+            return None
+        
+        # 生成导出报告
+        report = {
+            'total_files': len(exported_files),
+            'output_directory': output_dir,
+            'exported_files': exported_files,
+            'export_mode': 'by_package' if export_by_package else 'by_type'
+        }
+        
+        if export_by_package:
+            # 按包统计
+            files_by_package = {}
+            for file_info in exported_files:
+                package = file_info['package']
+                if package not in files_by_package:
+                    files_by_package[package] = []
+                files_by_package[package].append(file_info)
+            report['files_by_package'] = files_by_package
+        else:
+            # 按文件类型统计
+            files_by_type = {}
+            for file_info in exported_files:
+                file_type = file_info['file_type']
+                if file_type not in files_by_type:
+                    files_by_type[file_type] = 0
+                files_by_type[file_type] += 1
+            report['files_by_type'] = files_by_type
+        
+        return report 
