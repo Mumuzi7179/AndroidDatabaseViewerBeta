@@ -1,9 +1,9 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                                QProgressBar, QPushButton, QTextEdit, QGroupBox,
                                QTreeWidget, QTreeWidgetItem, QMessageBox, QApplication,
-                               QCheckBox)
+                               QCheckBox, QMenu, QSplitter)
 from PySide6.QtCore import QThread, Signal, Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QAction
 import os
 import subprocess
 import platform
@@ -45,37 +45,42 @@ class ExportAttachmentsDialog(QDialog):
         
         self.setWindowTitle("一键导出所有附件")
         self.setModal(True)
-        self.resize(800, 600)
+        self.resize(1000, 700)  # 增大窗口尺寸
         
         self.setup_ui()
         
     def setup_ui(self):
         """设置界面"""
         layout = QVBoxLayout(self)
+        layout.setSpacing(8)  # 减小组件间距
         
-        # 说明文本
-        info_label = QLabel("此功能将扫描所有数据库，自动识别并导出大于150字节的二进制文件。\n"
-                           "导出的文件将按类型分类保存到 ./output/ 目录中。")
+        # 说明文本 - 减小高度
+        info_label = QLabel("此功能将扫描所有数据库，自动识别并导出大于150字节的二进制文件，按类型分类保存到 ./output/ 目录中。")
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #666; padding: 10px; background-color: #f0f0f0; border-radius: 5px;")
+        info_label.setMaximumHeight(40)  # 限制高度
+        info_label.setStyleSheet("color: #666; padding: 8px; background-color: #f8f8f8; border-radius: 4px; font-size: 12px;")
         layout.addWidget(info_label)
         
-        # 导出选项组
-        options_group = QGroupBox("导出选项")
+        # 导出选项组 - 压缩高度
+        options_group = QGroupBox("导出选项(不勾选则默认按文件类型导出)")
+        options_group.setMaximumHeight(80)  # 限制高度
         options_layout = QVBoxLayout(options_group)
+        options_layout.setContentsMargins(10, 5, 10, 5)  # 减小边距
         
         # 按包导出选项
-        self.export_by_package_checkbox = QCheckBox("按照文件夹导出")
+        self.export_by_package_checkbox = QCheckBox("按照应用包名分文件夹导出")
         self.export_by_package_checkbox.setToolTip("勾选后将按包名创建文件夹，文件命名为：数据库名_序号.扩展名")
         options_layout.addWidget(self.export_by_package_checkbox)
         
         layout.addWidget(options_group)
         
-        # 进度组
+        # 进度组 - 压缩高度
         progress_group = QGroupBox("导出进度")
+        progress_group.setMaximumHeight(90)  # 限制高度
         progress_layout = QVBoxLayout(progress_group)
+        progress_layout.setContentsMargins(10, 5, 10, 5)  # 减小边距
         
-        self.status_label = QLabel("准备开始...")
+        self.status_label = QLabel("点击「开始导出」按钮开始...")
         progress_layout.addWidget(self.status_label)
         
         self.progress_bar = QProgressBar()
@@ -84,49 +89,174 @@ class ExportAttachmentsDialog(QDialog):
         
         layout.addWidget(progress_group)
         
-        # 结果组
+        # 使用分割器来更好地分配空间
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # 结果组 - 这是主要内容区域，给予更多空间
         result_group = QGroupBox("导出结果")
         result_layout = QVBoxLayout(result_group)
+        result_layout.setContentsMargins(10, 10, 10, 10)
         
-        # 统计信息
+        # 统计信息 - 减小高度
         self.stats_label = QLabel("等待开始导出...")
         self.stats_label.setFont(QFont("", 10, QFont.Weight.Bold))
+        self.stats_label.setMaximumHeight(30)  # 限制高度
         result_layout.addWidget(self.stats_label)
         
-        # 文件列表
+        # 文件列表 - 这是主要展示区域
         self.result_tree = QTreeWidget()
-        self.result_tree.setHeaderLabels(["文件类型", "大小", "详细信息"])
+        self.result_tree.setHeaderLabels(["文件名/类型", "大小", "详细路径"])
         self.result_tree.setVisible(False)
+        self.result_tree.setMinimumHeight(300)  # 设置最小高度
+        # 设置列宽比例
+        self.result_tree.setColumnWidth(0, 250)
+        self.result_tree.setColumnWidth(1, 100)
+        self.result_tree.setColumnWidth(2, 400)
+        
+        # 添加右键菜单
+        self.result_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.result_tree.customContextMenuRequested.connect(self.show_context_menu)
+        
         result_layout.addWidget(self.result_tree)
         
-        # 详细日志
+        splitter.addWidget(result_group)
+        
+        # 详细日志 - 压缩到较小区域
+        log_group = QGroupBox("详细日志")
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(10, 5, 10, 5)
+        
         self.log_text = QTextEdit()
-        self.log_text.setMaximumHeight(150)
+        self.log_text.setMaximumHeight(120)  # 限制日志区域高度
         self.log_text.setVisible(False)
-        result_layout.addWidget(self.log_text)
+        self.log_text.setStyleSheet("font-family: Consolas, Monaco, monospace; font-size: 11px;")
+        log_layout.addWidget(self.log_text)
         
-        layout.addWidget(result_group)
+        splitter.addWidget(log_group)
         
-        # 按钮组
+        # 设置分割器比例 - 结果区域占大部分空间
+        splitter.setStretchFactor(0, 3)  # 结果区域占3/4
+        splitter.setStretchFactor(1, 1)  # 日志区域占1/4
+        
+        layout.addWidget(splitter)
+        
+        # 按钮组 - 压缩高度
         button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 5, 0, 0)
         
-        self.start_button = QPushButton("开始导出")
+        self.start_button = QPushButton("🚀 开始导出")
         self.start_button.clicked.connect(self.start_export)
+        self.start_button.setMinimumHeight(35)  # 设置按钮高度
         button_layout.addWidget(self.start_button)
         
-        self.open_folder_button = QPushButton("打开输出文件夹")
+        self.open_folder_button = QPushButton("📁 打开输出文件夹")
         self.open_folder_button.clicked.connect(self.open_output_folder)
         self.open_folder_button.setEnabled(False)
+        self.open_folder_button.setMinimumHeight(35)  # 设置按钮高度
         button_layout.addWidget(self.open_folder_button)
         
         button_layout.addStretch()
         
         self.close_button = QPushButton("关闭")
         self.close_button.clicked.connect(self.close)
+        self.close_button.setMinimumHeight(35)  # 设置按钮高度
         button_layout.addWidget(self.close_button)
         
         layout.addLayout(button_layout)
         
+    def show_context_menu(self, position):
+        """显示右键菜单"""
+        item = self.result_tree.itemAt(position)
+        if not item:
+            return
+        
+        # 只有文件项才显示右键菜单（不是文件夹项）
+        if not item.parent():  # 如果是顶级项（文件夹），不显示菜单
+            return
+            
+        # 获取文件路径
+        file_path = self.get_file_path_from_item(item)
+        if not file_path or not os.path.exists(file_path):
+            return
+        
+        menu = QMenu(self)
+        
+        # 打开文件
+        open_action = QAction("🔍 打开文件", self)
+        open_action.triggered.connect(lambda: self.open_file(file_path))
+        menu.addAction(open_action)
+        
+        # 在文件管理器中显示
+        show_action = QAction("📁 在文件管理器中显示", self)
+        show_action.triggered.connect(lambda: self.show_in_explorer(file_path))
+        menu.addAction(show_action)
+        
+        # 复制文件路径
+        copy_action = QAction("📋 复制文件路径", self)
+        copy_action.triggered.connect(lambda: self.copy_file_path(file_path))
+        menu.addAction(copy_action)
+        
+        menu.exec(self.result_tree.mapToGlobal(position))
+    
+    def get_file_path_from_item(self, item):
+        """从树项获取文件路径"""
+        if not item.parent():
+            return None
+        
+        # 首先尝试从存储的数据中获取文件路径
+        file_path = item.data(0, Qt.ItemDataRole.UserRole)
+        if file_path and os.path.exists(file_path):
+            return file_path
+        
+        # 如果没有存储的路径，尝试从界面文本解析
+        file_name = item.text(0)
+        parent_item = item.parent()
+        parent_text = parent_item.text(2)  # 详细信息列
+        
+        if "保存在" in parent_text:
+            # 解析路径，例如 "保存在 ./output/images/ 目录"
+            import re
+            match = re.search(r'保存在\s+(.+)\s+目录', parent_text)
+            if match:
+                dir_path = match.group(1)
+                return os.path.join(dir_path, file_name)
+        
+        return None
+    
+    def open_file(self, file_path):
+        """打开文件"""
+        try:
+            if platform.system() == "Windows":
+                os.startfile(file_path)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", file_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", file_path])
+        except Exception as e:
+            QMessageBox.warning(self, "警告", f"无法打开文件: {e}")
+    
+    def show_in_explorer(self, file_path):
+        """在文件管理器中显示文件"""
+        try:
+            # 转换为绝对路径
+            abs_path = os.path.abspath(file_path)
+            
+            if platform.system() == "Windows":
+                # Windows下使用explorer命令选中文件
+                subprocess.run(f'explorer /select,"{abs_path}"', shell=True)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", "-R", abs_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", os.path.dirname(abs_path)])
+        except Exception as e:
+            QMessageBox.warning(self, "警告", f"无法在文件管理器中显示文件: {e}")
+    
+    def copy_file_path(self, file_path):
+        """复制文件路径到剪贴板"""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(file_path)
+        self.status_label.setText(f"已复制文件路径: {os.path.basename(file_path)}")
+
     def start_export(self):
         """开始导出"""
         self.start_button.setEnabled(False)
@@ -194,12 +324,14 @@ class ExportAttachmentsDialog(QDialog):
                     file_item = QTreeWidgetItem(package_item)
                     file_item.setText(0, os.path.basename(file_info['file_path']))
                     file_item.setText(1, f"{file_info['file_size']} 字节")
-                    file_item.setText(2, f"{file_info['database']}/{file_info['table']}/{file_info['column']}")
+                    file_item.setText(2, f"来源: {file_info['database']}/{file_info['table']}/{file_info['column']}")
+                    # 存储完整文件路径用于右键菜单
+                    file_item.setData(0, Qt.ItemDataRole.UserRole, file_info['file_path'])
         else:
             # 按文件类型分组显示
             for file_type, count in files_by_type.items():
                 type_item = QTreeWidgetItem(self.result_tree)
-                type_item.setText(0, f"{file_type} 文件")
+                type_item.setText(0, f"📁 {file_type} 文件")
                 type_item.setText(1, f"{count} 个文件")
                 type_item.setText(2, f"保存在 ./output/{file_type[1:]}/ 目录")
                 
@@ -209,7 +341,9 @@ class ExportAttachmentsDialog(QDialog):
                     file_item = QTreeWidgetItem(type_item)
                     file_item.setText(0, os.path.basename(file_info['file_path']))
                     file_item.setText(1, f"{file_info['file_size']} 字节")
-                    file_item.setText(2, f"{file_info['package']}/{file_info['database']}/{file_info['table']}/{file_info['column']}")
+                    file_item.setText(2, f"来源: {file_info['package']}/{file_info['database']}/{file_info['table']}/{file_info['column']}")
+                    # 存储完整文件路径用于右键菜单
+                    file_item.setData(0, Qt.ItemDataRole.UserRole, file_info['file_path'])
         
         self.result_tree.expandAll()
         

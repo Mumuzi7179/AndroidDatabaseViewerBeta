@@ -135,7 +135,7 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("Android 数据库分析工具 v0.3.0")
+        self.setWindowTitle("Android 数据库分析工具 v0.3.1")
         self.setGeometry(100, 100, 1200, 800)
         # 设置最小窗口大小，确保所有按钮都能显示
         self.setMinimumSize(1000, 600)
@@ -931,7 +931,7 @@ class MainWindow(QMainWindow):
         about_html = """
         <div style="text-align: center; padding: 20px;">
             <h2>Android 数据库分析工具</h2>
-            <p><strong>版本:</strong> 0.3.0</p>
+            <p><strong>版本:</strong> 0.3.1</p>
             <p><strong>作者:</strong> mumuzi</p>
             <p><strong>GitHub:</strong> <a href="https://github.com/Mumuzi7179">https://github.com/Mumuzi7179</a></p>
             
