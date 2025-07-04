@@ -66,7 +66,7 @@ class LogManager:
         filename = f"{prefix}_{timestamp}.{extension}"
         return str(self.base_dir / filename)
     
-    def save_search_results(self, search_term: str, results: List, case_sensitive: bool = False, use_regex: bool = False) -> str:
+    def save_search_results(self, search_term: str, results: List, case_sensitive: bool = False, use_regex: bool = False, search_bytes: bool = False) -> str:
         """
         保存搜索结果
         
@@ -75,6 +75,7 @@ class LogManager:
             results: 搜索结果列表
             case_sensitive: 是否区分大小写
             use_regex: 是否使用正则表达式
+            search_bytes: 是否搜索字节
             
         Returns:
             保存的文件路径
@@ -89,6 +90,7 @@ class LogManager:
                 "search_term": search_term,
                 "case_sensitive": case_sensitive,
                 "use_regex": use_regex,
+                "search_bytes": search_bytes,
                 "timestamp": datetime.now().isoformat(),
                 "result_count": len(results)
             },

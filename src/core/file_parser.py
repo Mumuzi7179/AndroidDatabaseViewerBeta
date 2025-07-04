@@ -41,6 +41,7 @@ class AndroidFileParser:
     
     # 常见的Android数据存储目录
     COMMON_DATA_PATHS = [
+        "data",
         "data/data",
         "data/user/0",
         "data/user_de/0",
@@ -81,11 +82,26 @@ class AndroidFileParser:
         """检测非系统应用"""
         print("正在检测非系统应用...")
         
-        # 方法1: 从/data/app和/app目录读取包名
-        self._detect_from_app_directories()
+        # 首先检查是否存在常见的Android数据路径
+        has_common_paths = False
+        for common_path in self.COMMON_DATA_PATHS:
+            full_path = self.root_path / common_path
+            if full_path.exists() and full_path.is_dir():
+                has_common_paths = True
+                break
         
-        # 方法2: 从packages.xml文件解析
-        self._detect_from_packages_xml()
+        # 如果存在常见路径，优先从这些路径检测，避免全局扫描
+        if has_common_paths:
+            print("  发现常见Android路径，跳过全局扫描以提高速度")
+            # 方法2: 从packages.xml文件解析
+            self._detect_from_packages_xml()
+        else:
+            # 只有在没有常见路径时才进行全目录扫描
+            # 方法1: 从/data/app和/app目录读取包名
+            self._detect_from_app_directories()
+            
+            # 方法2: 从packages.xml文件解析
+            self._detect_from_packages_xml()
         
         if self.non_system_packages:
             print(f"检测到 {len(self.non_system_packages)} 个非系统应用")

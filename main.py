@@ -13,7 +13,7 @@ def main():
     """主程序入口"""
     app = QApplication(sys.argv)
     app.setApplicationName("Android数据库可视化工具")
-    app.setApplicationVersion("0.3.1")
+    app.setApplicationVersion("0.4.0")
     
     # 设置应用图标和样式
     app.setStyle("Fusion")

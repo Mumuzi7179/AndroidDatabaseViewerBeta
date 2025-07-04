@@ -114,18 +114,19 @@ class SearchThread(QThread):
     search_progress = Signal(str)   # 搜索进度信息
     search_error = Signal(str)      # 搜索错误
     
-    def __init__(self, database_manager, search_term, case_sensitive=False, use_regex=False):
+    def __init__(self, database_manager, search_term, case_sensitive=False, use_regex=False, search_bytes=False):
         super().__init__()
         self.database_manager = database_manager
         self.search_term = search_term
         self.case_sensitive = case_sensitive
         self.use_regex = use_regex
+        self.search_bytes = search_bytes
     
     def run(self):
         try:
             self.search_progress.emit("正在搜索数据库...")
             results = self.database_manager.global_search(
-                self.search_term, self.case_sensitive, self.use_regex
+                self.search_term, self.case_sensitive, self.use_regex, self.search_bytes
             )
             self.search_completed.emit(results)
         except Exception as e:
@@ -181,6 +182,12 @@ class SearchDialog(QDialog):
         self.regex_cb = QCheckBox("正则表达式")
         self.regex_cb.setToolTip("启用正则表达式搜索模式")
         options_layout.addWidget(self.regex_cb)
+        
+        # 新增：搜索字节选项
+        self.search_bytes_cb = QCheckBox("搜索字节")
+        self.search_bytes_cb.setToolTip("示例：504b0304")
+        self.search_bytes_cb.stateChanged.connect(self.on_search_bytes_changed)
+        options_layout.addWidget(self.search_bytes_cb)
         
         self.auto_save_cb = QCheckBox("自动保存结果")
         self.auto_save_cb.setChecked(True)
@@ -432,6 +439,23 @@ class SearchDialog(QDialog):
         """设置日志管理器"""
         self.log_manager = log_manager
     
+    def on_search_bytes_changed(self):
+        """处理搜索字节选项变化"""
+        if self.search_bytes_cb.isChecked():
+            # 勾选搜索字节时，禁用其他选项
+            self.case_sensitive_cb.setEnabled(False)
+            self.regex_cb.setEnabled(False)
+            self.case_sensitive_cb.setChecked(False)
+            self.regex_cb.setChecked(False)
+            # 更新搜索框提示
+            self.search_input.setPlaceholderText("输入十六进制字节串 (示例: 504b0304)")
+        else:
+            # 取消勾选时，恢复其他选项
+            self.case_sensitive_cb.setEnabled(True)
+            self.regex_cb.setEnabled(True)
+            # 恢复搜索框提示
+            self.search_input.setPlaceholderText("输入要搜索的内容... (正则示例: \\d{11} 匹配11位数字)")
+    
     def start_search(self):
         """开始搜索"""
         search_term = self.search_input.text().strip()
@@ -442,6 +466,18 @@ class SearchDialog(QDialog):
         if not self.database_manager:
             QMessageBox.warning(self, "警告", "数据库管理器未初始化")
             return
+        
+        # 如果是字节搜索，验证输入格式
+        if self.search_bytes_cb.isChecked():
+            # 验证十六进制格式
+            import re
+            if not re.match(r'^[0-9a-fA-F]+$', search_term):
+                QMessageBox.warning(self, "警告", "请输入有效的十六进制字符串 (例如: 504b0304)")
+                return
+            # 确保是偶数长度（每个字节需要2个十六进制字符）
+            if len(search_term) % 2 != 0:
+                QMessageBox.warning(self, "警告", "十六进制字符串长度必须是偶数")
+                return
         
         # 禁用搜索按钮
         self.search_btn.setEnabled(False)
@@ -456,8 +492,10 @@ class SearchDialog(QDialog):
         # 启动搜索线程
         case_sensitive = self.case_sensitive_cb.isChecked()
         use_regex = self.regex_cb.isChecked()
+        search_bytes = self.search_bytes_cb.isChecked()
+        
         self.search_thread = SearchThread(
-            self.database_manager, search_term, case_sensitive, use_regex
+            self.database_manager, search_term, case_sensitive, use_regex, search_bytes
         )
         self.search_thread.search_completed.connect(self.on_search_completed)
         self.search_thread.search_progress.connect(self.on_search_progress)
@@ -490,7 +528,8 @@ class SearchDialog(QDialog):
                     self.search_input.text(),
                     results,
                     self.case_sensitive_cb.isChecked(),
-                    self.regex_cb.isChecked()
+                    self.regex_cb.isChecked(),
+                    self.search_bytes_cb.isChecked()
                 )
                 self.status_label.setText(f"搜索完成，已保存到: {log_file}")
             except Exception as e:
@@ -643,7 +682,8 @@ class SearchDialog(QDialog):
                 self.search_input.text(),
                 self.last_results,
                 self.case_sensitive_cb.isChecked(),
-                self.regex_cb.isChecked()
+                self.regex_cb.isChecked(),
+                self.search_bytes_cb.isChecked()
             )
             QMessageBox.information(self, "成功", f"搜索结果已保存到:\n{log_file}")
             

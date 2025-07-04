@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
     QSplitter, QPushButton, QLabel, QFileDialog,
     QMessageBox, QProgressBar, QStatusBar, QMenuBar,
-    QMenu, QToolBar, QApplication
+    QMenu, QToolBar, QApplication, QProgressDialog
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtGui import QAction, QIcon, QDesktopServices
@@ -20,6 +20,7 @@ import time
 from ..core.file_parser import AndroidFileParser
 from ..core.database_manager import DatabaseManager
 from ..core.log_manager import LogManager
+from ..core.project_manager import ProjectManager
 from .package_tree import PackageTreeWidget
 from .database_viewer import DatabaseViewerWidget
 from .search_dialog import SearchDialog
@@ -89,9 +90,11 @@ class MainWindow(QMainWindow):
         self.file_parser = None
         self.database_manager = DatabaseManager()
         self.log_manager = LogManager()
+        self.project_manager = ProjectManager()
         self.packages = []
         self.current_data_path = ""
         self.load_thread = None
+        self.has_unsaved_changes = False  # 追踪是否有未保存的更改
         
         # 启用拖拽功能
         self.setAcceptDrops(True)
@@ -135,7 +138,7 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("Android 数据库分析工具 v0.3.1")
+        self.setWindowTitle("Android 数据库分析工具 v0.4.0")
         self.setGeometry(100, 100, 1200, 800)
         # 设置最小窗口大小，确保所有按钮都能显示
         self.setMinimumSize(1000, 600)
@@ -156,20 +159,26 @@ class MainWindow(QMainWindow):
         toolbar_layout = QHBoxLayout()
         toolbar_layout.setSpacing(10)  # 设置按钮间距
         
-        # 选择文件夹按钮
-        self.select_folder_btn = QPushButton("选择数据包文件夹")
+        # 选择文件夹按钮 - 修改名称
+        self.select_folder_btn = QPushButton("选择文件夹")
         self.select_folder_btn.clicked.connect(self.select_data_folder)
-        self.select_folder_btn.setMinimumWidth(140)
+        self.select_folder_btn.setMinimumWidth(100)
         toolbar_layout.addWidget(self.select_folder_btn)
         
-        # 一键解析所有数据库按钮
-        self.parse_all_db_btn = QPushButton("一键解析所有数据库")
+        # 解析所有数据库按钮 - 修改名称
+        self.parse_all_db_btn = QPushButton("解析所有数据库")
         self.parse_all_db_btn.setToolTip("直接解析文件夹下的所有数据库文件，无需Android包结构")
         self.parse_all_db_btn.clicked.connect(self.select_and_parse_all_databases)
-        # 确保按钮可见
         self.parse_all_db_btn.setVisible(True)
-        self.parse_all_db_btn.setMinimumWidth(150)
+        self.parse_all_db_btn.setMinimumWidth(120)
         toolbar_layout.addWidget(self.parse_all_db_btn)
+        
+        # 载入工程文件按钮 - 新增
+        self.load_project_btn = QPushButton("载入工程文件")
+        self.load_project_btn.setToolTip("载入之前保存的.madb工程文件")
+        self.load_project_btn.clicked.connect(self.load_project_file)
+        self.load_project_btn.setMinimumWidth(100)
+        toolbar_layout.addWidget(self.load_project_btn)
         
         # 当前路径显示
         self.path_label = QLabel("未选择数据包 (可拖拽文件夹到此窗口)")
@@ -700,6 +709,7 @@ class MainWindow(QMainWindow):
     def on_data_loaded(self, packages):
         """数据加载完成"""
         self.packages = packages
+        self.has_unsaved_changes = True  # 标记有未保存的更改
         
         # 更新包树形视图
         self.package_tree.load_packages(packages)
@@ -931,7 +941,7 @@ class MainWindow(QMainWindow):
         about_html = """
         <div style="text-align: center; padding: 20px;">
             <h2>Android 数据库分析工具</h2>
-            <p><strong>版本:</strong> 0.3.1</p>
+            <p><strong>版本:</strong> 0.4.0</p>
             <p><strong>作者:</strong> mumuzi</p>
             <p><strong>GitHub:</strong> <a href="https://github.com/Mumuzi7179">https://github.com/Mumuzi7179</a></p>
             
@@ -964,6 +974,35 @@ class MainWindow(QMainWindow):
         try:
             print("正在关闭程序...")
             
+            # 如果有未保存的更改，询问用户是否保存
+            if self.has_unsaved_changes and self.packages:
+                reply = QMessageBox.question(
+                    self, "保存提醒", 
+                    "是否保存为工程文件？",
+                    QMessageBox.StandardButton.Yes | 
+                    QMessageBox.StandardButton.No | 
+                    QMessageBox.StandardButton.Cancel
+                )
+                
+                if reply == QMessageBox.StandardButton.Cancel:
+                    # 用户取消，不退出程序
+                    event.ignore()
+                    return
+                elif reply == QMessageBox.StandardButton.Yes:
+                    # 用户选择保存
+                    success = self.save_current_project()
+                    if not success:
+                        # 保存失败，询问是否强制退出
+                        force_exit = QMessageBox.question(
+                            self, "保存失败",
+                            "工程文件保存失败，是否强制退出？",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                        )
+                        if force_exit == QMessageBox.StandardButton.No:
+                            event.ignore()
+                            return
+                # 用户选择不保存，直接继续退出流程
+            
             # 停止数据库查看器中的线程
             if hasattr(self, 'database_viewer') and self.database_viewer:
                 self.database_viewer.stop_loading()
@@ -983,6 +1022,10 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'database_manager') and self.database_manager:
                 self.database_manager.close_all_connections()
             
+            # 清理工程管理器的临时文件
+            if hasattr(self, 'project_manager') and self.project_manager:
+                self.project_manager.cleanup_temp_files()
+            
             print("程序关闭清理完成")
             event.accept()
             
@@ -990,6 +1033,175 @@ class MainWindow(QMainWindow):
             print(f"关闭程序时出错: {e}")
             # 即使出错也要接受关闭事件
             event.accept()
+    
+    def save_current_project(self):
+        """保存当前工程"""
+        try:
+            # 创建进度对话框
+            progress_dialog = QProgressDialog("", "取消", 0, 100, self)
+            progress_dialog.setWindowTitle("保存工程")
+            progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.show()
+            
+            def update_progress(message, percent):
+                progress_dialog.setValue(percent)
+                QApplication.processEvents()
+                if progress_dialog.wasCanceled():
+                    return False
+                return True
+            
+            # 保存工程文件
+            success = self.project_manager.save_project(
+                self.packages, 
+                self.current_data_path, 
+                progress_callback=update_progress
+            )
+            
+            progress_dialog.close()
+            
+            if success:
+                self.has_unsaved_changes = False
+                QMessageBox.information(self, "保存成功", "工程文件已成功保存！")
+                return True
+            else:
+                QMessageBox.warning(self, "保存失败", "工程文件保存失败！")
+                return False
+            
+        except Exception as e:
+            QMessageBox.critical(self, "保存错误", f"保存工程文件时发生错误:\n{str(e)}")
+            return False
+    
+    def clear_all_data(self):
+        """清空所有解析的数据"""
+        try:
+            print("正在清空解析数据...")
+            
+            # 清空包数据
+            self.packages = []
+            self.current_data_path = ""
+            self.has_unsaved_changes = False
+            
+            # 重置界面
+            self.package_tree.tree.clear()  # 使用正确的方法清空树形视图
+            self.database_viewer.clear_table_display()  # 使用正确的方法清空数据库视图
+            
+            # 禁用相关按钮
+            self.search_btn.setEnabled(False)
+            self.ai_analysis_btn.setEnabled(False)
+            self.suspicious_analysis_btn.setEnabled(False)
+            self.export_attachments_btn.setEnabled(False)
+            
+            # 重置标签
+            self.path_label.setText("未选择数据包 (可拖拽文件夹到此窗口)")
+            self.status_label.setText("已清空解析数据")
+            self.stats_label.setText("")
+            
+            # 关闭数据库连接
+            if self.database_manager:
+                self.database_manager.close_all_connections()
+            
+            print("解析数据清空完成")
+            
+        except Exception as e:
+            print(f"清空数据时出错: {e}")
+    
+    def load_project_file(self):
+        """载入工程文件"""
+        try:
+            # 如果当前有未保存的更改，先询问用户
+            if self.has_unsaved_changes and self.packages:
+                reply = QMessageBox.question(
+                    self, "确认载入",
+                    "当前有未保存的解析记录，载入工程文件将清除当前数据。\n是否继续？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
+            
+            # 选择工程文件
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "选择工程文件", "", "Android数据库工程文件 (*.madb)"
+            )
+            
+            if not file_path:
+                return
+            
+            # 创建进度对话框
+            progress_dialog = QProgressDialog("", "取消", 0, 100, self)
+            progress_dialog.setWindowTitle("载入工程")
+            progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.show()
+            
+            def update_progress(message, percent):
+                progress_dialog.setValue(percent)
+                QApplication.processEvents()
+                if progress_dialog.wasCanceled():
+                    return False
+                return True
+            
+            # 先清空当前数据
+            self.clear_all_data()
+            
+            # 载入工程文件
+            project_data = self.project_manager.load_project(
+                file_path, 
+                progress_callback=update_progress
+            )
+            
+            if project_data:
+                # 恢复数据
+                self.packages = project_data.packages
+                self.current_data_path = project_data.current_data_path
+                self.has_unsaved_changes = False  # 刚载入的工程文件不算未保存更改
+                
+                # 显示数据库加载进度
+                update_progress("", 85)
+                
+                # 重新加载数据库管理器
+                def db_progress_callback(current, total):
+                    # 将数据库加载进度映射到85-95区间
+                    if total > 0:
+                        db_progress = 85 + int((current / total) * 10)
+                        update_progress("", db_progress)
+                        QApplication.processEvents()
+                
+                self.database_manager.load_databases(self.packages, progress_callback=db_progress_callback)
+                
+                # 更新界面
+                self.package_tree.load_packages(self.packages)
+                self.search_btn.setEnabled(True)
+                self.ai_analysis_btn.setEnabled(True)
+                self.suspicious_analysis_btn.setEnabled(True)
+                self.export_attachments_btn.setEnabled(True)
+                
+                # 更新标签
+                self.path_label.setText(f"工程文件: {file_path}")
+                self.status_label.setText("工程文件载入完成")
+                
+                # 更新统计信息
+                self.update_statistics()
+                
+                # 完成进度
+                update_progress("", 100)
+            
+            progress_dialog.close()
+            
+            if project_data:
+                QMessageBox.information(
+                    self, "载入成功", 
+                    f"工程文件载入成功！\n"
+                    f"包含 {len(self.packages)} 个包\n"
+                    f"包含 {len(project_data.database_files)} 个数据库文件"
+                )
+            else:
+                QMessageBox.warning(self, "载入失败", "工程文件载入失败！")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "载入错误", f"载入工程文件时发生错误:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def select_and_parse_all_databases(self):
         """选择文件夹并解析其中所有数据库文件"""
@@ -1107,6 +1319,7 @@ class MainWindow(QMainWindow):
             # 加载数据库
             self.database_manager.load_databases(packages)
             self.packages = packages
+            self.has_unsaved_changes = True  # 标记有未保存的更改
             
             # 更新界面
             self.package_tree.load_packages(packages)

@@ -221,17 +221,26 @@ class DatabaseManager:
         self.cached_data = {}  # 数据缓存 {package_name: {parent_dir: {db_name: {table_name: CachedTableData}}}}
         self.search_index = {}  # 搜索索引
     
-    def load_databases(self, packages):
+    def load_databases(self, packages, progress_callback=None):
         """
         加载所有包的数据库信息并预加载表信息
         
         Args:
             packages: 包信息列表
+            progress_callback: 进度回调函数 callback(current, total)
         """
         print("开始加载数据库信息...")
         self.databases = {}
         self.cached_data = {}
         
+        # 统计总数据库数量以计算进度
+        total_db_count = 0
+        for package in packages:
+            if package.database_files:
+                for parent_dir, db_files in package.database_files.items():
+                    total_db_count += len(db_files)
+        
+        processed_db_count = 0
         total_databases = 0
         total_tables = 0
         
@@ -278,6 +287,11 @@ class DatabaseManager:
                             dir_dbs[db_file.file_name] = db_info
                             dir_cache[db_file.file_name] = table_cache
                             total_databases += 1
+                        
+                        processed_db_count += 1
+                        # 更新进度
+                        if progress_callback and total_db_count > 0:
+                            progress_callback(processed_db_count, total_db_count)
                     
                     if dir_dbs:
                         package_dbs[parent_dir] = dir_dbs
@@ -569,7 +583,7 @@ class DatabaseManager:
                 except:
                     pass
     
-    def global_search(self, search_term: str, case_sensitive: bool = False, use_regex: bool = False) -> List[SearchResult]:
+    def global_search(self, search_term: str, case_sensitive: bool = False, use_regex: bool = False, search_bytes: bool = False) -> List[SearchResult]:
         """
         全局搜索所有数据库（使用索引加速）
         
@@ -577,17 +591,18 @@ class DatabaseManager:
             search_term: 搜索词
             case_sensitive: 是否区分大小写
             use_regex: 是否使用正则表达式
+            search_bytes: 是否搜索字节
             
         Returns:
             搜索结果列表
         """
         results = []
         
-        print(f"开始全局搜索: '{search_term}' (正则: {use_regex}, 大小写: {case_sensitive})")
+        print(f"开始全局搜索: '{search_term}' (正则: {use_regex}, 大小写: {case_sensitive}, 字节: {search_bytes})")
         
-        # 如果使用正则表达式，直接使用传统搜索（索引不支持正则）
-        if use_regex:
-            results = self._traditional_search(search_term, case_sensitive, use_regex)
+        # 如果是字节搜索或使用正则表达式，直接使用传统搜索（索引不支持）
+        if use_regex or search_bytes:
+            results = self._traditional_search(search_term, case_sensitive, use_regex, search_bytes)
         else:
             search_pattern = search_term if case_sensitive else search_term.lower()
             
@@ -611,7 +626,7 @@ class DatabaseManager:
             
             # 如果索引搜索结果不够，回退到传统搜索
             if len(results) < 100:
-                traditional_results = self._traditional_search(search_pattern, case_sensitive, use_regex)
+                traditional_results = self._traditional_search(search_pattern, case_sensitive, use_regex, search_bytes)
                 # 合并结果并去重
                 existing_keys = set()
                 for r in results:
@@ -625,8 +640,8 @@ class DatabaseManager:
         
         print(f"搜索完成，找到 {len(results)} 条结果")
         return results
-    
-    def _traditional_search(self, search_pattern: str, case_sensitive: bool, use_regex: bool = False) -> List[SearchResult]:
+
+    def _traditional_search(self, search_pattern: str, case_sensitive: bool, use_regex: bool = False, search_bytes: bool = False) -> List[SearchResult]:
         """传统的数据库搜索方法"""
         results = []
         
@@ -634,13 +649,13 @@ class DatabaseManager:
             for parent_dir, dir_dbs in package_dbs.items():
                 for db_name, db_info in dir_dbs.items():
                     results.extend(self._search_database(
-                        db_info, search_pattern, case_sensitive, use_regex
+                        db_info, search_pattern, case_sensitive, use_regex, search_bytes
                     ))
         
         return results
-    
+
     def _search_database(self, db_info: DatabaseInfo, search_pattern: str, 
-                        case_sensitive: bool, use_regex: bool = False) -> List[SearchResult]:
+                        case_sensitive: bool, use_regex: bool = False, search_bytes: bool = False) -> List[SearchResult]:
         """
         搜索单个数据库
         
@@ -649,6 +664,7 @@ class DatabaseManager:
             search_pattern: 搜索模式
             case_sensitive: 是否区分大小写
             use_regex: 是否使用正则表达式
+            search_bytes: 是否搜索字节
             
         Returns:
             搜索结果列表
@@ -664,82 +680,142 @@ class DatabaseManager:
                 cursor.execute(f"PRAGMA table_info({table_name})")
                 columns = [row[1] for row in cursor.fetchall()]
                 
-                # 在每个文本列中搜索
-                for column in columns:
+                if search_bytes:
+                    # 字节搜索：需要查看所有列的二进制数据
                     try:
-                        if use_regex:
-                            # 正则表达式搜索：获取所有数据然后在Python中过滤
-                            query = f"SELECT * FROM {table_name} LIMIT 10000"
-                            cursor.execute(query)
-                            rows = cursor.fetchall()
+                        # 将十六进制字符串转换为字节
+                        search_bytes_data = bytes.fromhex(search_pattern)
+                        
+                        # 获取所有行数据
+                        query = f"SELECT * FROM {table_name} LIMIT 10000"
+                        cursor.execute(query)
+                        rows = cursor.fetchall()
+                        
+                        for row in rows:
+                            # 创建行数据字典
+                            row_data = dict(zip(columns, row))
                             
-                            import re
-                            # 编译正则表达式
-                            flags = 0 if case_sensitive else re.IGNORECASE
-                            try:
-                                regex_pattern = re.compile(search_pattern, flags)
-                            except re.error as e:
-                                print(f"正则表达式错误: {e}")
-                                continue
-                            
-                            for row in rows:
-                                # 创建行数据字典
-                                row_data = dict(zip(columns, row))
+                            # 检查每列是否包含目标字节序列
+                            for column_idx, column_value in enumerate(row):
+                                if isinstance(column_value, bytes):
+                                    # 直接在字节数据中搜索
+                                    if search_bytes_data in column_value:
+                                        # 格式化显示匹配的字节
+                                        match_hex = column_value.hex()
+                                        result = SearchResult(
+                                            package_name=db_info.package_name,
+                                            database_name=db_info.database_name,
+                                            table_name=table_name,
+                                            column_name=columns[column_idx],
+                                            row_data=row_data,
+                                            match_value=f"字节匹配: {search_pattern.upper()} 在 {match_hex[:100]}..." if len(match_hex) > 100 else f"字节匹配: {search_pattern.upper()} 在 {match_hex}",
+                                            parent_dir=db_info.parent_dir
+                                        )
+                                        results.append(result)
+                                elif column_value is not None:
+                                    # 尝试将字符串转换为字节再搜索
+                                    try:
+                                        if isinstance(column_value, str):
+                                            # 尝试将字符串解释为十六进制
+                                            if len(str(column_value)) >= len(search_pattern):
+                                                column_str = str(column_value).replace(' ', '').replace('-', '')
+                                                if search_pattern.lower() in column_str.lower():
+                                                    result = SearchResult(
+                                                        package_name=db_info.package_name,
+                                                        database_name=db_info.database_name,
+                                                        table_name=table_name,
+                                                        column_name=columns[column_idx],
+                                                        row_data=row_data,
+                                                        match_value=f"十六进制字符串匹配: {search_pattern.upper()} 在 {column_str[:100]}..." if len(column_str) > 100 else f"十六进制字符串匹配: {search_pattern.upper()} 在 {column_str}",
+                                                        parent_dir=db_info.parent_dir
+                                                    )
+                                                    results.append(result)
+                                    except:
+                                        continue
+                    except ValueError as e:
+                        print(f"十六进制转换错误: {e}")
+                        continue
+                    except sqlite3.Error:
+                        continue
+                        
+                else:
+                    # 普通搜索逻辑（保持原有逻辑不变）
+                    # 在每个文本列中搜索
+                    for column in columns:
+                        try:
+                            if use_regex:
+                                # 正则表达式搜索：获取所有数据然后在Python中过滤
+                                query = f"SELECT * FROM {table_name} LIMIT 10000"
+                                cursor.execute(query)
+                                rows = cursor.fetchall()
                                 
-                                # 获取列值并转换为字符串
-                                column_value = str(row_data.get(column, ""))
+                                import re
+                                # 编译正则表达式
+                                flags = 0 if case_sensitive else re.IGNORECASE
+                                try:
+                                    regex_pattern = re.compile(search_pattern, flags)
+                                except re.error as e:
+                                    print(f"正则表达式错误: {e}")
+                                    continue
                                 
-                                # 使用正则表达式匹配
-                                if regex_pattern.search(column_value):
+                                for row in rows:
+                                    # 创建行数据字典
+                                    row_data = dict(zip(columns, row))
+                                    
+                                    # 获取列值并转换为字符串
+                                    column_value = str(row_data.get(column, ""))
+                                    
+                                    # 使用正则表达式匹配
+                                    if regex_pattern.search(column_value):
+                                        result = SearchResult(
+                                            package_name=db_info.package_name,
+                                            database_name=db_info.database_name,
+                                            table_name=table_name,
+                                            column_name=column,
+                                            row_data=row_data,
+                                            match_value=column_value,
+                                            parent_dir=db_info.parent_dir
+                                        )
+                                        results.append(result)
+                            else:
+                                # 普通字符串搜索
+                                if case_sensitive:
+                                    query = f"""
+                                        SELECT * FROM {table_name} 
+                                        WHERE {column} LIKE '%{search_pattern}%'
+                                        LIMIT 100
+                                    """
+                                else:
+                                    query = f"""
+                                        SELECT * FROM {table_name} 
+                                        WHERE LOWER({column}) LIKE '%{search_pattern}%'
+                                        LIMIT 100
+                                    """
+                                
+                                cursor.execute(query)
+                                rows = cursor.fetchall()
+                                
+                                for row in rows:
+                                    # 创建行数据字典
+                                    row_data = dict(zip(columns, row))
+                                    
+                                    # 获取匹配的值
+                                    match_value = str(row_data.get(column, ""))
+                                    
                                     result = SearchResult(
                                         package_name=db_info.package_name,
                                         database_name=db_info.database_name,
                                         table_name=table_name,
                                         column_name=column,
                                         row_data=row_data,
-                                        match_value=column_value,
+                                        match_value=match_value,
                                         parent_dir=db_info.parent_dir
                                     )
                                     results.append(result)
-                        else:
-                            # 普通字符串搜索
-                            if case_sensitive:
-                                query = f"""
-                                    SELECT * FROM {table_name} 
-                                    WHERE {column} LIKE '%{search_pattern}%'
-                                    LIMIT 100
-                                """
-                            else:
-                                query = f"""
-                                    SELECT * FROM {table_name} 
-                                    WHERE LOWER({column}) LIKE '%{search_pattern}%'
-                                    LIMIT 100
-                                """
-                            
-                            cursor.execute(query)
-                            rows = cursor.fetchall()
-                            
-                            for row in rows:
-                                # 创建行数据字典
-                                row_data = dict(zip(columns, row))
-                                
-                                # 获取匹配的值
-                                match_value = str(row_data.get(column, ""))
-                                
-                                result = SearchResult(
-                                    package_name=db_info.package_name,
-                                    database_name=db_info.database_name,
-                                    table_name=table_name,
-                                    column_name=column,
-                                    row_data=row_data,
-                                    match_value=match_value,
-                                    parent_dir=db_info.parent_dir
-                                )
-                                results.append(result)
-                    
-                    except sqlite3.Error:
-                        # 忽略列类型不兼容等错误
-                        continue
+                        
+                        except sqlite3.Error:
+                            # 忽略列类型不兼容等错误
+                            continue
         
         except sqlite3.Error as e:
             print(f"搜索数据库失败 {db_info.database_path}: {e}")
