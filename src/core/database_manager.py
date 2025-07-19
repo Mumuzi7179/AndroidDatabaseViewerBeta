@@ -1030,3 +1030,272 @@ class DatabaseManager:
             report['files_by_type'] = files_by_type
         
         return report 
+    
+    def bulk_suspicious_search(self, categories: Dict[str, Dict], progress_callback=None) -> Dict[str, List[SearchResult]]:
+        """
+        批量可疑信息搜索 - 超级优化版本
+        
+        Args:
+            categories: 搜索分类字典，格式：
+                {
+                    "分类名": {
+                        "keywords": ["关键词1", "关键词2"],
+                        "regex": ["正则1", "正则2"],
+                        "color": "#颜色值"
+                    }
+                }
+        
+        Returns:
+            按分类组织的搜索结果字典
+        """
+        import re
+        import time
+        
+        print("开始批量可疑信息搜索（超级优化版本）...")
+        start_time = time.time()
+        
+        # 预编译正则表达式
+        compiled_regex = {}
+        for category, config in categories.items():
+            compiled_regex[category] = []
+            for pattern in config.get("regex", []):
+                try:
+                    compiled_regex[category].append(re.compile(pattern, re.IGNORECASE))
+                except re.error as e:
+                    print(f"正则表达式编译错误 '{pattern}': {e}")
+        
+        # 预处理关键词
+        keywords_lower = {}
+        for category, config in categories.items():
+            keywords_lower[category] = [kw.lower() for kw in config.get("keywords", [])]
+        
+        category_results = {category: [] for category in categories.keys()}
+        unique_results = {category: set() for category in categories.keys()}
+        
+        # 智能数据库排序：优先处理小数据库
+        db_list = []
+        for package_name, package_dbs in self.databases.items():
+            for parent_dir, dir_dbs in package_dbs.items():
+                for db_name, db_info in dir_dbs.items():
+                    try:
+                        # 获取数据库文件大小
+                        db_size = os.path.getsize(db_info.database_path)
+                        db_list.append((db_size, db_info))
+                    except:
+                        db_list.append((0, db_info))
+        
+        # 按大小排序，先处理小文件
+        db_list.sort(key=lambda x: x[0])
+        
+        processed_count = 0
+        total_databases = len(db_list)
+        
+        for db_size, db_info in db_list:
+            processed_count += 1
+            
+            # 智能跳过：如果数据库太大且已有足够结果，跳过
+            if db_size > 50 * 1024 * 1024:  # 50MB以上的大数据库
+                total_current_results = sum(len(results) for results in category_results.values())
+                if total_current_results > 1000:  # 已有足够结果
+                    print(f"跳过大数据库 {db_info.database_path} (大小: {db_size/1024/1024:.1f}MB)")
+                    continue
+            
+            # 更新进度
+            progress_percent = int((processed_count / total_databases) * 90)
+            if progress_callback:
+                elapsed = time.time() - start_time
+                progress_callback(progress_percent, f"正在搜索: {processed_count}/{total_databases} (用时:{elapsed:.1f}s)")
+            
+            # 搜索单个数据库
+            db_results = self._bulk_search_database(
+                db_info, categories, keywords_lower, compiled_regex
+            )
+            
+            # 合并结果并去重
+            for category, results in db_results.items():
+                for result in results:
+                    unique_key = f"{result.package_name}|{result.database_name}|{result.table_name}|{result.column_name}|{str(result.match_value)[:50]}"
+                    if unique_key not in unique_results[category]:
+                        unique_results[category].add(unique_key)
+                        category_results[category].append(result)
+            
+            # 如果所有分类都有足够结果，提前结束
+            if all(len(results) >= 500 for results in category_results.values()):
+                print("所有分类都已找到足够结果，提前结束搜索")
+                break
+        
+        total_time = time.time() - start_time
+        total_results = sum(len(results) for results in category_results.values())
+        print(f"批量搜索完成，总共找到 {total_results} 条可疑信息，用时 {total_time:.2f} 秒")
+        
+        for category, results in category_results.items():
+            if results:
+                print(f"  {category}: {len(results)} 条")
+        
+        return category_results
+    
+    def _bulk_search_database(self, db_info: DatabaseInfo, categories: Dict[str, Dict], 
+                             keywords_lower: Dict[str, List[str]], compiled_regex: Dict[str, List]) -> Dict[str, List[SearchResult]]:
+        """
+        在单个数据库中进行批量搜索 - 高性能优化版本
+        
+        Args:
+            db_info: 数据库信息
+            categories: 搜索分类配置
+            keywords_lower: 预处理的小写关键词
+            compiled_regex: 预编译的正则表达式
+            
+        Returns:
+            按分类组织的搜索结果
+        """
+        results = {category: [] for category in categories.keys()}
+        BATCH_SIZE = 200  # 大幅减少批次大小
+        MAX_RESULTS_PER_CATEGORY = 500  # 限制每个分类的结果数量
+        MAX_TABLE_ROWS = 5000  # 限制每个表的最大搜索行数
+        
+        try:
+            conn = sqlite3.connect(db_info.database_path)
+            conn.execute("PRAGMA cache_size = 10000")  # 增加缓存
+            conn.execute("PRAGMA temp_store = MEMORY")  # 使用内存临时存储
+            cursor = conn.cursor()
+            
+            for table_name in (db_info.tables or []):
+                try:
+                    # 获取表结构
+                    cursor.execute(f"PRAGMA table_info({table_name})")
+                    columns = [row[1] for row in cursor.fetchall()]
+                    
+                    # 获取表行数，如果太大则跳过或限制
+                    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                    total_rows = cursor.fetchone()[0]
+                    
+                    if total_rows == 0:
+                        continue
+                        
+                    # 智能采样：对于大表只搜索前面的数据
+                    search_limit = min(total_rows, MAX_TABLE_ROWS)
+                    
+                    # 分批处理
+                    offset = 0
+                    while offset < search_limit:
+                        # 检查是否已经找到足够的结果
+                        if all(len(results[cat]) >= MAX_RESULTS_PER_CATEGORY for cat in categories.keys()):
+                            break
+                            
+                        current_batch_size = min(BATCH_SIZE, search_limit - offset)
+                        query = f"SELECT * FROM {table_name} LIMIT {current_batch_size} OFFSET {offset}"
+                        cursor.execute(query)
+                        batch_rows = cursor.fetchall()
+                        
+                        if not batch_rows:
+                            break
+                        
+                        # 优化的行处理
+                        for row in batch_rows:
+                            # 预过滤：只处理包含文本的列
+                            text_values = []
+                            for i, value in enumerate(row):
+                                if value is not None and isinstance(value, (str, bytes)):
+                                    if isinstance(value, bytes):
+                                        try:
+                                            text_val = value.decode('utf-8', errors='replace')
+                                        except:
+                                            continue
+                                    else:
+                                        text_val = str(value)
+                                    
+                                    if len(text_val.strip()) > 0:  # 跳过空字符串
+                                        text_values.append((i, text_val, text_val.lower()))
+                            
+                            if not text_values:
+                                continue
+                                
+                            row_data = dict(zip(columns, row))
+                            
+                            # 优化的匹配检查
+                            for column_idx, search_text, search_text_lower in text_values:
+                                # 快速预检查：如果文本太短，跳过
+                                if len(search_text) < 2:
+                                    continue
+                                    
+                                matched_results = self._fast_match_check(
+                                    search_text, search_text_lower, categories, keywords_lower, compiled_regex
+                                )
+                                
+                                for category, matched_keyword in matched_results:
+                                    # 检查该分类是否已有足够结果
+                                    if len(results[category]) >= MAX_RESULTS_PER_CATEGORY:
+                                        continue
+                                        
+                                    enhanced_match_value = f"{search_text[:200]} [匹配:{matched_keyword}]"  # 限制显示长度
+                                    result = SearchResult(
+                                        package_name=db_info.package_name,
+                                        database_name=db_info.database_name,
+                                        table_name=table_name,
+                                        column_name=columns[column_idx],
+                                        row_data=row_data,
+                                        match_value=enhanced_match_value,
+                                        parent_dir=db_info.parent_dir
+                                    )
+                                    results[category].append(result)
+                        
+                        offset += current_batch_size
+                    
+                except sqlite3.Error as e:
+                    print(f"表 {table_name} 查询错误: {e}")
+                    continue
+            
+            conn.close()
+            
+        except sqlite3.Error as e:
+            print(f"数据库 {db_info.database_path} 访问错误: {e}")
+        
+        return results
+    
+    def _fast_match_check(self, search_text: str, search_text_lower: str, 
+                         categories: Dict, keywords_lower: Dict, compiled_regex: Dict) -> List[Tuple[str, str]]:
+        """
+        快速匹配检查 - 优化版本
+        
+        Args:
+            search_text: 原始搜索文本
+            search_text_lower: 小写搜索文本
+            categories: 搜索分类配置
+            keywords_lower: 预处理的小写关键词
+            compiled_regex: 预编译的正则表达式
+            
+        Returns:
+            匹配结果列表 [(分类名, 匹配关键词)]
+        """
+        matched_results = []
+        
+        # 预先检查是否包含任何可能的关键词字符
+        has_chinese = any('\u4e00' <= char <= '\u9fff' for char in search_text)
+        has_english = any(char.isalpha() for char in search_text)
+        
+        if not (has_chinese or has_english):
+            return matched_results
+        
+        for category in categories.keys():
+            found_match = False
+            
+            # 关键词匹配 - 使用更快的算法
+            for i, keyword_lower in enumerate(keywords_lower[category]):
+                if keyword_lower in search_text_lower:
+                    matched_keyword = categories[category]["keywords"][i]
+                    matched_results.append((category, matched_keyword))
+                    found_match = True
+                    break
+            
+            # 只有在关键词没匹配时才检查正则
+            if not found_match and compiled_regex[category]:
+                for i, regex_pattern in enumerate(compiled_regex[category]):
+                    try:
+                        if regex_pattern.search(search_text):
+                            matched_keyword = f"正则:{categories[category]['regex'][i]}"
+                            matched_results.append((category, matched_keyword))
+                            break
+                    except Exception:
+                        continue
+        
+        return matched_results

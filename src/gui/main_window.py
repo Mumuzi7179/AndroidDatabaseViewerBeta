@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("Android 数据库分析工具 v0.4.0")
+        self.setWindowTitle("Android 数据库分析工具 v0.4.1")
         self.setGeometry(100, 100, 1200, 800)
         # 设置最小窗口大小，确保所有按钮都能显示
         self.setMinimumSize(1000, 600)
@@ -776,10 +776,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "请先加载数据包")
             return
         
-        # 直接开始分析，不显示确认对话框
+        # 显示分析对话框，让用户手动点击分析
         dialog = SuspiciousAnalysisDialog(self)
         dialog.set_database_manager(self.database_manager)
-        dialog.start_analysis()  # 直接开始分析
         dialog.exec()
     
     def show_export_attachments_dialog(self):
@@ -941,7 +940,7 @@ class MainWindow(QMainWindow):
         about_html = """
         <div style="text-align: center; padding: 20px;">
             <h2>Android 数据库分析工具</h2>
-            <p><strong>版本:</strong> 0.4.0</p>
+            <p><strong>版本:</strong> 0.4.1</p>
             <p><strong>作者:</strong> mumuzi</p>
             <p><strong>GitHub:</strong> <a href="https://github.com/Mumuzi7179">https://github.com/Mumuzi7179</a></p>
             
