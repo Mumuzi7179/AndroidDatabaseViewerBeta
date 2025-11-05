@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass
+from PySide6.QtCore import QSettings
 
 
 # 常见文件头定义（基于file_head.txt）
@@ -177,6 +178,8 @@ class DatabaseInfo:
     database_path: str
     parent_dir: str  # 父目录名称（databases, cache等）
     tables: Optional[List[str]] = None
+    is_encrypted: bool = False  # 是否SQLCipher加密（通过文件头与解析失败推断）
+    plaintext_path: Optional[str] = None  # 成功解密后的明文副本路径
     
     def __post_init__(self):
         if self.tables is None:
@@ -220,6 +223,35 @@ class DatabaseManager:
         self.connections = {}  # 数据库连接缓存
         self.cached_data = {}  # 数据缓存 {package_name: {parent_dir: {db_name: {table_name: CachedTableData}}}}
         self.search_index = {}  # 搜索索引
+        # 解密成功缓存（持久化）
+        self.decryption_cache = self._load_decryption_cache()
+
+    def _load_decryption_cache(self) -> Dict[str, Any]:
+        """从QSettings加载解密成功的缓存"""
+        try:
+            s = QSettings("AndroidDatabaseViewer", "ADBViewer")
+            return s.value("decryption_cache", {}) or {}
+        except Exception:
+            return {}
+
+    def _save_decryption_cache(self):
+        try:
+            s = QSettings("AndroidDatabaseViewer", "ADBViewer")
+            s.setValue("decryption_cache", self.decryption_cache)
+        except Exception:
+            pass
+
+    def get_cached_decryption(self, db_path: str) -> Optional[Dict[str, Any]]:
+        """获取已缓存的解密信息"""
+        return self.decryption_cache.get(db_path)
+
+    def cache_decryption_success(self, db_path: str, plaintext_path: str, params: Dict[str, Any]):
+        """缓存解密成功信息并持久化"""
+        self.decryption_cache[db_path] = {
+            "plaintext_path": plaintext_path,
+            "params": params
+        }
+        self._save_decryption_cache()
     
     def load_databases(self, packages, progress_callback=None):
         """
@@ -259,21 +291,29 @@ class DatabaseManager:
                                 package_name=package.package_name,
                                 database_name=db_file.file_name,
                                 database_path=db_file.file_path,
-                                parent_dir=parent_dir
+                                parent_dir=parent_dir,
+                                is_encrypted=getattr(db_file, 'is_encrypted', False)
                             )
                             
-                            # 预加载表信息
+                            # 如果以前已解密成功，直接切换到明文副本
+                            cached = self.get_cached_decryption(db_file.file_path)
+                            if cached and os.path.exists(cached.get("plaintext_path", "")):
+                                db_info.plaintext_path = cached["plaintext_path"]
+                                db_info.database_path = db_info.plaintext_path
+                                db_info.is_encrypted = False
+                            
+                            # 预加载表信息（加密数据库可能失败，这里容错）
                             print(f"  预加载: {package.package_name}/{parent_dir}/{db_file.file_name}")
-                            db_info.tables = self._get_table_names(db_file.file_path)
+                            db_info.tables = self._get_table_names(db_info.database_path)
                             total_tables += len(db_info.tables)
                             
                             # 预加载小表的数据（行数小于1000的表）
                             table_cache = {}
                             for table_name in db_info.tables:
                                 try:
-                                    row_count = self._get_table_row_count(db_file.file_path, table_name)
+                                    row_count = self._get_table_row_count(db_info.database_path, table_name)
                                     if row_count <= 1000:  # 小表直接缓存
-                                        columns, rows = self._load_table_data(db_file.file_path, table_name)
+                                        columns, rows = self._load_table_data(db_info.database_path, table_name)
                                         table_cache[table_name] = CachedTableData(
                                             columns=columns,
                                             rows=rows,
@@ -433,6 +473,181 @@ class DatabaseManager:
                 conn.close()
         
         return tables
+
+    def _import_sqlcipher(self):
+        """尝试导入SQLCipher Python绑定"""
+        try:
+            import sqlcipher3 as sqlcipher
+            return sqlcipher
+        except Exception:
+            try:
+                import pysqlcipher3 as sqlcipher
+                return sqlcipher
+            except Exception:
+                return None
+
+    def decrypt_sqlcipher3_to_plain(self, db_path: str, password: str,
+                                    page_size: int = 1024,
+                                    kdf_iter: int = 64000,
+                                    hmac_alg: str = 'SHA1',
+                                    kdf_alg: str = 'SHA1',
+                                    cipher_version: str = 'v3') -> Optional[str]:
+        """
+        使用SQLCipher3参数解密数据库到明文副本并返回新路径。
+        失败返回None。
+        """
+        # 如果是普通 SQLite（明文），直接返回原路径
+        try:
+            with open(db_path, 'rb') as f:
+                header = f.read(16)
+            if header.startswith(b'SQLite format 3\x00'):
+                print("检测到普通 SQLite 数据库，无需解密，直接使用原文件")
+                return db_path
+        except Exception:
+            pass
+
+        sqlcipher = self._import_sqlcipher()
+        if sqlcipher is None:
+            print("未找到SQLCipher绑定，请安装 sqlcipher3-binary 或 pysqlcipher3")
+            return None
+
+        import hashlib, tempfile, os
+        # 构造明文输出路径
+        digest = hashlib.sha1(db_path.encode('utf-8')).hexdigest()[:16]
+        out_dir = os.path.join(tempfile.gettempdir(), "adbviewer_decrypted", digest)
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, Path(db_path).name + ".plain.sqlite")
+        
+        # 尝试策略A：按 v3 兼容参数解密（cipher_compatibility=3 + 用户参数）
+        def try_decrypt_v3_params() -> Optional[str]:
+            try:
+                conn = sqlcipher.dbapi2.connect(db_path)
+                cur = conn.cursor()
+                # 安全转义密码中的单引号
+                password_sql = (password or '').replace("'", "''")
+                cur.execute(f"PRAGMA key='{password_sql}';")
+                # v4 绑定时设置兼容模式为3；v3 绑定不支持该 PRAGMA，忽略异常
+                try:
+                    cur.execute("PRAGMA cipher_compatibility = 3;")
+                except Exception:
+                    pass
+                # 显式启用 HMAC（v3 总是启用；v4 默认启用）
+                try:
+                    cur.execute("PRAGMA cipher_use_hmac = 1;")
+                except Exception:
+                    pass
+                cur.execute(f"PRAGMA cipher_page_size={int(page_size)};")
+                cur.execute(f"PRAGMA kdf_iter={int(kdf_iter)};")
+                hmac_map = {
+                    'SHA1': 'HMAC_SHA1',
+                    'SHA256': 'HMAC_SHA256',
+                    'SHA512': 'HMAC_SHA512'
+                }
+                kdf_map = {
+                    'SHA1': 'PBKDF2_HMAC_SHA1',
+                    'SHA256': 'PBKDF2_HMAC_SHA256',
+                    'SHA512': 'PBKDF2_HMAC_SHA512'
+                }
+                cur.execute(f"PRAGMA cipher_hmac_algorithm={hmac_map.get(hmac_alg, 'HMAC_SHA1')};")
+                cur.execute(f"PRAGMA cipher_kdf_algorithm={kdf_map.get(kdf_alg, 'PBKDF2_HMAC_SHA1')};")
+
+                # 测试是否可以读取
+                cur.execute("SELECT name FROM sqlite_master LIMIT 1;")
+                _ = cur.fetchall()
+
+                # 导出到明文
+                try:
+                    if os.path.exists(out_path):
+                        os.unlink(out_path)
+                except Exception:
+                    pass
+                cur.execute(f"ATTACH DATABASE '{out_path}' AS plaintext KEY '';")
+                cur.execute("SELECT sqlcipher_export('plaintext');")
+                cur.execute("DETACH DATABASE plaintext;")
+                conn.close()
+                return out_path if os.path.exists(out_path) else None
+            except Exception as e:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                print(f"v3 兼容参数尝试失败: {e}")
+                return None
+
+        # 尝试策略B：按 v4 常用参数解密（不设置兼容模式）
+        def try_decrypt_v4_defaults() -> Optional[str]:
+            try:
+                conn = sqlcipher.dbapi2.connect(db_path)
+                cur = conn.cursor()
+                # 安全转义密码中的单引号
+                password_sql = (password or '').replace("'", "''")
+                cur.execute(f"PRAGMA key='{password_sql}';")
+                # v4 默认参数或用户提供的参数
+                cur.execute(f"PRAGMA cipher_page_size={int(page_size) if page_size else 4096};")
+                cur.execute(f"PRAGMA kdf_iter={int(kdf_iter) if kdf_iter else 256000};")
+                hmac_map = {
+                    'SHA1': 'HMAC_SHA1',
+                    'SHA256': 'HMAC_SHA256',
+                    'SHA512': 'HMAC_SHA512'
+                }
+                kdf_map = {
+                    'SHA1': 'PBKDF2_HMAC_SHA1',
+                    'SHA256': 'PBKDF2_HMAC_SHA256',
+                    'SHA512': 'PBKDF2_HMAC_SHA512'
+                }
+                cur.execute(f"PRAGMA cipher_hmac_algorithm={hmac_map.get(hmac_alg, 'HMAC_SHA256')};")
+                cur.execute(f"PRAGMA cipher_kdf_algorithm={kdf_map.get(kdf_alg, 'PBKDF2_HMAC_SHA256')};")
+                try:
+                    cur.execute("PRAGMA cipher_use_hmac = 1;")
+                except Exception:
+                    pass
+
+                # 测试是否可以读取
+                cur.execute("SELECT name FROM sqlite_master LIMIT 1;")
+                _ = cur.fetchall()
+
+                # 导出到明文
+                try:
+                    if os.path.exists(out_path):
+                        os.unlink(out_path)
+                except Exception:
+                    pass
+                cur.execute(f"ATTACH DATABASE '{out_path}' AS plaintext KEY '';")
+                cur.execute("SELECT sqlcipher_export('plaintext');")
+                cur.execute("DETACH DATABASE plaintext;")
+                conn.close()
+                return out_path if os.path.exists(out_path) else None
+            except Exception as e:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                print(f"v4 常用参数尝试失败: {e}")
+                return None
+
+        # 根据用户选择执行策略；若失败则回退另一种
+        if (cipher_version or 'v3').lower() == 'v3':
+            result = try_decrypt_v3_params()
+            if result:
+                return result
+            # 回退 v4
+            # 使用更常见的 v4 默认值进行一次兜底尝试
+            page_size_bak = 4096
+            kdf_iter_bak = 256000
+            result = try_decrypt_v4_defaults()
+            if result:
+                return result
+        else:
+            # 用户选 v4，先走 v4
+            result = try_decrypt_v4_defaults()
+            if result:
+                return result
+            # 回退 v3
+            result = try_decrypt_v3_params()
+            if result:
+                return result
+        print("密钥或参数不正确，无法打开数据库，已按选择与回退策略尝试 v3/v4")
+        return None
     
     def get_table_info(self, package_name: str, parent_dir: str, db_name: str, table_name: str) -> Optional[TableInfo]:
         """

@@ -131,9 +131,23 @@ class PackageTreeWidget(QWidget):
             
             for package in sorted(packages_with_db, key=lambda x: x.package_name):
                 # 根据是否为系统应用设置不同的显示文本和颜色
+                # 检测包下是否包含加密数据库
+                package_has_encrypted = False
+                try:
+                    if hasattr(package, 'database_files') and package.database_files:
+                        for _dir, _files in package.database_files.items():
+                            if any(getattr(f, 'is_encrypted', False) for f in _files):
+                                package_has_encrypted = True
+                                break
+                except Exception:
+                    package_has_encrypted = False
+
                 display_text = package.package_name
                 if not package.is_system_app:
                     display_text = f"📱 {package.package_name}"  # 为非系统应用添加手机图标
+                # 为加密包添加锁图标
+                if package_has_encrypted:
+                    display_text = f"🔒 {display_text}"
                 
                 package_item = QTreeWidgetItem(db_root, [display_text])
                 package_item.setData(0, Qt.ItemDataRole.UserRole, {
@@ -150,7 +164,13 @@ class PackageTreeWidget(QWidget):
                 
                 # 为每个包添加目录级别
                 for parent_dir, db_files in package.database_files.items():
-                    dir_item = QTreeWidgetItem(package_item, [parent_dir])
+                    # 目录是否包含加密数据库
+                    dir_has_encrypted = any(getattr(f, 'is_encrypted', False) for f in db_files)
+                    dir_display = parent_dir
+                    if dir_has_encrypted:
+                        dir_display = f"🔒 {dir_display}"
+                    
+                    dir_item = QTreeWidgetItem(package_item, [dir_display])
                     dir_item.setData(0, Qt.ItemDataRole.UserRole, {
                         'type': 'directory',
                         'package_name': package.package_name,
@@ -159,7 +179,11 @@ class PackageTreeWidget(QWidget):
                     
                     # 添加数据库（三级结构到此为止）
                     for db_file in sorted(db_files, key=lambda x: x.file_name):
-                        db_item = QTreeWidgetItem(dir_item, [db_file.file_name])
+                        # 数据库项文本（可选加锁显示）
+                        db_display = db_file.file_name
+                        if getattr(db_file, 'is_encrypted', False):
+                            db_display = f"🔒 {db_display}"
+                        db_item = QTreeWidgetItem(dir_item, [db_display])
                         db_item.setData(0, Qt.ItemDataRole.UserRole, {
                             'type': 'database',
                             'package_name': package.package_name,
@@ -344,4 +368,4 @@ class PackageTreeWidget(QWidget):
             
         except Exception as e:
             print(f"选择数据库项时出错: {e}")
-            return False 
+            return False

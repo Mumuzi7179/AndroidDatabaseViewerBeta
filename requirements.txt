@@ -2,3 +2,4 @@ PySide6>=6.4.0
 pathlib2>=2.3.0
 pyinstaller>=5.0
 requests>=2.25.0 
+sqlcipher3-wheels==0.5.5.post0

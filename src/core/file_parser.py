@@ -18,6 +18,7 @@ class DatabaseFileInfo:
     file_name: str
     file_path: str
     parent_dir: str  # databases, cache, 等
+    is_encrypted: bool = False  # 是否为SQLCipher加密（通过文件头粗略判断）
     
     
 @dataclass
@@ -442,10 +443,24 @@ class AndroidFileParser:
                         else:
                             parent_path = root_dir_name
                             
+                        # 判断是否为加密（SQLCipher3）：文件头不是标准SQLite签名
+                        is_encrypted = False
+                        try:
+                            with open(item, 'rb') as f:
+                                header = f.read(16)
+                                # 标准SQLite签名 "SQLite format 3\x00"
+                                if not header.startswith(b'SQLite format 3\x00'):
+                                    # 扩展名常见且头不匹配，视为可能加密
+                                    if item.suffix.lower() in ['.db', '.sqlite', '.sqlite3']:
+                                        is_encrypted = True
+                        except Exception:
+                            is_encrypted = False
+                        
                         db_info = DatabaseFileInfo(
                             file_name=item.name,
                             file_path=str(item),
-                            parent_dir=parent_path
+                            parent_dir=parent_path,
+                            is_encrypted=is_encrypted
                         )
                         databases.append(db_info)
                 elif item.is_dir():
@@ -596,4 +611,4 @@ class AndroidFileParser:
             
         except (IOError, json.JSONDecodeError) as e:
             print(f"加载JSON文件失败: {e}")
-            return False 
+            return False

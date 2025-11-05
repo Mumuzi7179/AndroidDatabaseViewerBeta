@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QEasingCurve, QPropertyAnimation
 from PySide6.QtGui import QFont, QAction, QWheelEvent, QColor
 
 from ..core.database_manager import format_field_value, detect_file_type
+from .cipher_dialog import Cipher3Dialog
 
 
 class CellDetailDialog(QDialog):
@@ -685,6 +686,59 @@ class DatabaseViewerWidget(QWidget):
                 db_name in self.database_manager.databases[package_name][parent_dir]):
                 
                 db_info = self.database_manager.databases[package_name][parent_dir][db_name]
+                
+                # 若检测为加密库，弹出对话框尝试解密
+                if getattr(db_info, 'is_encrypted', False):
+                    dlg = Cipher3Dialog(self)
+                    if dlg.exec() == QDialog.DialogCode.Accepted:
+                        params = dlg.get_params()
+                        if not params.get('password'):
+                            QMessageBox.warning(self, "提示", "请输入密码后再试。")
+                        else:
+                            original_path = db_info.database_path
+                            # 根据用户选择的 Cipher 版本设定合理默认（若用户未改动）
+                            cipher_version = (params.get('cipher_version') or 'v3').lower()
+                            if cipher_version == 'v4':
+                                # v4 常见默认
+                                params['page_size'] = params.get('page_size', 4096)
+                                params['kdf_iter'] = params.get('kdf_iter', 256000)
+                                params['hmac_alg'] = params.get('hmac_alg', 'SHA256')
+                                params['kdf_alg'] = params.get('kdf_alg', 'SHA256')
+                            else:
+                                # v3 常见默认
+                                params['page_size'] = params.get('page_size', 1024)
+                                params['kdf_iter'] = params.get('kdf_iter', 64000)
+                                params['hmac_alg'] = params.get('hmac_alg', 'SHA1')
+                                params['kdf_alg'] = params.get('kdf_alg', 'SHA1')
+                            out_path = self.database_manager.decrypt_sqlcipher3_to_plain(
+                                original_path,
+                                params['password'],
+                                page_size=params.get('page_size', 1024),
+                                kdf_iter=params.get('kdf_iter', 64000),
+                                hmac_alg=params.get('hmac_alg', 'SHA1'),
+                                kdf_alg=params.get('kdf_alg', 'SHA1'),
+                                cipher_version=params.get('cipher_version', 'v3')
+                            )
+                            if out_path and os.path.exists(out_path):
+                                # 切换到明文副本并缓存成功信息
+                                db_info.plaintext_path = out_path
+                                db_info.database_path = out_path
+                                db_info.is_encrypted = False
+                                self.database_manager.cache_decryption_success(
+                                    original_path, out_path, params
+                                )
+                                # 重新获取表列表
+                                db_info.tables = self.database_manager._get_table_names(out_path)
+                            else:
+                                QMessageBox.critical(self, "解密失败", "未能解密数据库，请确认密码与参数，或安装SQLCipher Python绑定。")
+                    else:
+                        # 用户取消
+                        self.current_table = ""
+                        self.current_columns = []
+                        self.table_combo.clear()
+                        self.table_combo.addItem("(已取消)")
+                        self.clear_table_display()
+                        return
                 self.current_table = db_info.tables[0] if db_info.tables else ""
                 self.current_columns = []  # 移除错误的columns属性访问
                 
@@ -1056,4 +1110,4 @@ class DatabaseViewerWidget(QWidget):
             # C++对象已被删除，忽略这个错误
             print("[超时处理] C++对象已删除，跳过处理")
         except Exception as e:
-            print(f"[超时处理] 处理超时时出错: {e}") 
+            print(f"[超时处理] 处理超时时出错: {e}")
